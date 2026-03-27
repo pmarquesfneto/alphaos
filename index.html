@@ -256,21 +256,19 @@ async function fetchPSDYear(key,crop,year){
       const rows=await r.json();
       if(!Array.isArray(rows)||!rows.length)continue;
       const sum=id=>rows.filter(d=>d.attributeId===id).reduce((s,d)=>s+parseFloat(d.value||0),0);
-      const usVal=id=>{const x=rows.find(d=>d.countryCode==='US'&&d.attributeId===id);return x?parseFloat(x.value):null;};
       const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125),wEnd=sum(176);
       const wSU=wDom>0?Math.round((wEnd/wDom)*1000)/10:null;
-      const usDom=usVal(125),usEnd=usVal(176);
-      const usSU=usDom>0&&usEnd!=null?Math.round((usEnd/usDom)*1000)/10:null;
+      const rawByCC={};
+      rows.forEach(d=>{if(!rawByCC[d.countryCode])rawByCC[d.countryCode]={};rawByCC[d.countryCode][d.attributeId]=parseFloat(d.value||0);});
+      const mkCC=cc=>{const v=rawByCC[cc]||{};const dom=v[125]??null,end=v[176]??null;const su=dom!=null&&dom>0&&end!=null?Math.round((end/dom)*1000)/10:null;return{begStocks:v[20]??null,production:v[28]??null,imports:v[57]??null,totalSupply:v[86]??null,exports:v[88]??null,domConsumption:dom,endingStocks:end,stocksToUse:su};};
       const topProd=rows.filter(d=>d.attributeId===28&&parseFloat(d.value)>0)
         .sort((a,b)=>parseFloat(b.value)-parseFloat(a.value)).slice(0,8)
         .map(d=>({cc:d.countryCode,val:parseFloat(d.value)}));
-      return{year,
+      return{year,rawByCC,
         world:{begStocks:Math.round(wBeg),production:Math.round(wProd),imports:Math.round(wImp),
                totalSupply:Math.round(wTot),exports:Math.round(wExp),domConsumption:Math.round(wDom),
                endingStocks:Math.round(wEnd),stocksToUse:wSU},
-        us:{begStocks:usVal(20),production:usVal(28),imports:usVal(57),
-            exports:usVal(88),domConsumption:usDom,endingStocks:usEnd,stocksToUse:usSU},
-        topProducers:topProd};
+        us:mkCC('US'),topProducers:topProd};
     }catch(e){}
   }
   return null;
@@ -1627,15 +1625,21 @@ function DetailPanel({detail,onClose,yields}){
    MAIN APP
    ===================================================================== */
 /* ═══════════════════════════════════════════════════════
-   PSD WORKBENCH — Interactive S&D Analysis Tool
+   PSD WORKBENCH v2 — Multi-select, all countries, 0,000.000 format
    ═══════════════════════════════════════════════════════ */
-const PSD_COUNTRIES={
-  'WORLD (Sum)':'ALL','US':'US','China':'CH','Brazil':'BR','EU':'E4',
-  'Argentina':'AR','Australia':'AS','Canada':'CA','India':'IB','Ukraine':'UP',
-  'Russia':'RS','Mexico':'MX','Thailand':'TH','Vietnam':'VM','Indonesia':'ID',
-  'Malaysia':'MY','Pakistan':'PK','Bangladesh':'BG'
+// Verified USDA PSD country codes from live API
+const PSD_CC={
+  'World (Sum)':'ALL','United States':'US','China':'CH','Brazil':'BR',
+  'EU-27':'E4','Argentina':'AR','India':'IN','Ukraine':'UP',
+  'Canada':'CA','Russia':'RS','Australia':'AS','Pakistan':'PK',
+  'Indonesia':'ID','Mexico':'MX','Thailand':'TH','Vietnam':'VM',
+  'Malaysia':'MY','Kazakhstan':'KZ','Turkey':'TU','Iran':'IR',
+  'Egypt':'EG','Nigeria':'NI','South Africa':'SF','Ethiopia':'ET',
+  'Bangladesh':'BG','Japan':'JA','South Korea':'KS','Nigeria':'NI',
+  'Saudi Arabia':'SA','Algeria':'AG'
 };
-const PSD_ATTR_MAP={
+const PSD_CC_NAME=Object.fromEntries(Object.entries(PSD_CC).map(([k,v])=>[v,k]));
+const PSD_ATTRS_DEF={
   20:{n:'Beg. Stocks',short:'BEG'},
   28:{n:'Production',short:'PROD'},
   57:{n:'Imports',short:'IMP'},
@@ -1645,290 +1649,292 @@ const PSD_ATTR_MAP={
   176:{n:'Ending Stocks',short:'ESTK'},
   195:{n:'Stocks/Use %',short:'S/U%',derived:true}
 };
-const PSD_CROP_YEARS=[2018,2019,2020,2021,2022,2023,2024,2025];
-const PSD_COUNTRY_NAMES=Object.fromEntries(Object.entries(PSD_COUNTRIES).map(([k,v])=>[v,k]));
+const PSD_ATTR_IDS=[20,28,57,86,88,125,176,195];
+const PSD_YEARS=[2018,2019,2020,2021,2022,2023,2024,2025];
 
 function PSDWorkbench({psd,psdKey,fetchPSDYear,fetchPSDHistory}){
   const CE=React.createElement;
-  const [selectedCrops,setSelectedCrops]=useState(['CORN','SOYBEANS','WHEAT']);
-  const [selectedAttrs,setSelectedAttrs]=useState([28,176,88,125,195]);
-  const [selectedYears,setSelectedYears]=useState([2022,2023,2024,2025]);
-  const [selectedCountry,setSelectedCountry]=useState('ALL');
-  const [viewMode,setViewMode]=useState('table'); // table | chart
-  const [chartAttr,setChartAttr]=useState(195); // which attr to chart
-  const [chartType,setChartType]=useState('line'); // line | bar
+  const [selCrops,setSelCrops]=useState(['CORN','SOYBEANS','WHEAT']);
+  const [selAttrs,setSelAttrs]=useState([28,176,125,195]);
+  const [selYears,setSelYears]=useState([2022,2023,2024,2025]);
+  const [selCountries,setSelCountries]=useState(['ALL','US']);
+  const [viewMode,setViewMode]=useState('table');
+  const [chartAttr,setChartAttr]=useState(195);
+  const [chartType,setChartType]=useState('line');
+  const [chartDim,setChartDim]=useState('year'); // year | country | crop
   const [tableData,setTableData]=useState({});
-  const [loading,setLoading]=useState({});
-  const [colMode,setColMode]=useState('years'); // years | crops | countries
+  const [loadingKeys,setLoadingKeys]=useState(new Set());
 
-  const fmt3=v=>v!=null&&!isNaN(v)?parseFloat(v).toFixed(3):'—';
-  const fmtVal=(v,attrId,div)=>{
+  // Number formatter: 0,000.000 always 3 decimals
+  const fmtN=(v,isPC)=>{
     if(v==null||isNaN(v))return '—';
-    if(attrId===195)return parseFloat(v).toFixed(1)+'%';
-    // Values in API are 1000 MT or 1000 Bales — show raw with 3 decimals as requested
-    return parseFloat(v).toFixed(3);
+    const n=parseFloat(v);
+    if(isPC)return n.toFixed(1)+'%';
+    // Format with thousands separator and 3 decimals
+    const parts=n.toFixed(3).split('.');
+    parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,',');
+    return parts.join('.');
   };
 
-  const cropMeta=React.useMemo(()=>{
-    const m={};
-    Object.entries(PSD_CROPS).forEach(([k,v])=>{ m[k]=v; });
-    return m;
-  },[]);
-
-  // Fetch data for selected crops/years/country
-  const fetchData=React.useCallback(async()=>{
-    if(!psdKey)return;
-    const needed=[];
-    selectedCrops.forEach(crop=>{
-      selectedYears.forEach(year=>{
-        const key=`${crop}_${year}`;
-        if(!tableData[key])needed.push({crop,year,key});
-      });
-    });
-    if(!needed.length)return;
-    setLoading(prev=>{
-      const n={...prev};
-      needed.forEach(({key})=>{n[key]=true;});
-      return n;
-    });
-    for(const {crop,year,key} of needed){
-      try{
-        const d=await fetchPSDYear(psdKey,crop,year);
-        setTableData(prev=>({...prev,[key]:d||null}));
-      }catch(e){}
-      setLoading(prev=>{const n={...prev};delete n[key];return n;});
-    }
-  },[psdKey,selectedCrops,selectedYears,tableData,fetchPSDYear]);
-
-  useEffect(()=>{fetchData();},[selectedCrops,selectedYears]);
-
-  // Extract value for a given crop/year/attr/country
-  const getValue=(crop,year,attrId,countryCode)=>{
-    const d=tableData[`${crop}_${year}`];
+  // Get value for crop+year+attrId+countryCode
+  const getVal=React.useCallback((crop,year,attrId,cc)=>{
+    const d=tableData[crop+'_'+year];
     if(!d)return null;
     if(attrId===195){
-      // Derived: EndStk / DomCons * 100
-      const endStk=getValue(crop,year,176,countryCode);
-      const domCons=getValue(crop,year,125,countryCode);
-      return endStk!=null&&domCons!=null&&domCons>0?(endStk/domCons)*100:null;
+      const end=getVal(crop,year,176,cc),dom=getVal(crop,year,125,cc);
+      return end!=null&&dom!=null&&dom>0?(end/dom)*100:null;
     }
-    if(countryCode==='ALL'){
-      // Sum all countries
-      return d.world?.[{20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'}[attrId]]??null;
-    }
-    if(countryCode==='US') return d.us?.[{20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'}[attrId]]??null;
-    return null; // Other countries need raw row data — future enhancement
-  };
+    const attrKey={20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'};
+    if(cc==='ALL')return d.world?.[attrKey[attrId]]??null;
+    if(cc==='US')return d.us?.[attrKey[attrId]]??null;
+    // Other countries via rawByCC
+    return d.rawByCC?.[cc]?.[attrId]??null;
+  },[tableData]);
 
-  const toggleCrop=c=>setSelectedCrops(p=>p.includes(c)?p.filter(x=>x!==c):[...p,c]);
-  const toggleAttr=a=>setSelectedAttrs(p=>p.includes(a)?p.filter(x=>x!==a):[...p,a]);
-  const toggleYear=y=>setSelectedYears(p=>p.includes(y)?p.filter(x=>x!==y).sort((a,b)=>a-b):[...p,y].sort((a,b)=>a-b));
-
-  const suColor=v=>v==null?C.muted:v<10?C.red:v<15?C.red:v<20?C.gold:C.green;
-  const changeColor=(curr,prev)=>curr==null||prev==null?C.muted:curr>prev?C.green:curr<prev?C.red:C.muted;
-
-  // Build chart data
-  const chartData=React.useMemo(()=>{
-    return selectedCrops.map(crop=>{
-      const vals=selectedYears.map(year=>getValue(crop,year,chartAttr,selectedCountry));
-      return{crop,vals,color:{CORN:C.gold,SOYBEANS:C.green,WHEAT:C.accent,COTTON:C.rose,COFFEE:'#8b4513',SUGAR:'#c0c0c0',COCOA:'#5c4033','PALM OIL':'#ff8c00'}[crop]||C.accent};
+  // Fetch data for selected crops+years
+  useEffect(()=>{
+    if(!psdKey)return;
+    const needed=[];
+    selCrops.forEach(crop=>selYears.forEach(year=>{
+      const k=crop+'_'+year;
+      if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});
+    }));
+    if(!needed.length)return;
+    setLoadingKeys(prev=>{const n=new Set(prev);needed.forEach(({k})=>n.add(k));return n;});
+    needed.forEach(async({crop,year,k})=>{
+      try{
+        const d=await fetchPSDYear(psdKey,crop,year);
+        setTableData(prev=>({...prev,[k]:d||null}));
+      }catch(e){}
+      setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;});
     });
-  },[tableData,selectedCrops,selectedYears,chartAttr,selectedCountry]);
+  },[psdKey,selCrops,selYears]);
 
-  const hasData=selectedCrops.some(c=>selectedYears.some(y=>tableData[`${c}_${y}`]));
-  const isLoading=Object.keys(loading).length>0;
+  const toggle=(arr,setArr,v)=>setArr(p=>p.includes(v)?p.filter(x=>x!==v):[...p,v]);
+  const toggleY=y=>setSelYears(p=>(p.includes(y)?p.filter(x=>x!==y):[...p,y]).sort((a,b)=>a-b));
+  const isLoading=loadingKeys.size>0;
+  const suColor=v=>v==null?C.muted:v<10?C.red:v<20?C.gold:C.green;
 
-  // SVG Line Chart
+  // Chip selector component
+  const ChipSel=({label,items,selected,onToggle,color=C.accent})=>CE('div',{style:{marginBottom:10}},
+    CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},label),
+    CE('div',{style:{display:'flex',flexWrap:'wrap',gap:3}},
+      items.map(([val,lbl])=>CE('button',{key:val,onClick:()=>onToggle(val),
+        style:{fontSize:7,padding:'2px 7px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',
+          background:selected.includes(val)?color+'25':'transparent',
+          border:'1px solid '+(selected.includes(val)?color:C.border),
+          color:selected.includes(val)?color:C.muted}},lbl||val))
+    )
+  );
+
+  // Build chart series
+  const chartSeries=React.useMemo(()=>{
+    const CROP_COLORS={CORN:C.gold,SOYBEANS:C.green,WHEAT:C.accent,COTTON:C.rose,COFFEE:'#a0522d',SUGAR:'#a8a8a8',COCOA:'#7b4f2e','PALM OIL':'#ff8c00'};
+    const CC_COLORS={ALL:'#c8a0e4',US:C.accent,CH:'#ff6b6b',BR:C.green,AR:'#ffd93d',IN:'#ff9f43',UP:'#74b9ff',CA:'#55efc4',AS:'#fd79a8',RS:'#636e72'};
+    const series=[];
+    if(chartDim==='year'){
+      selCrops.forEach((crop,ci)=>selCountries.forEach((cc,cci)=>{
+        const vals=selYears.map(yr=>getVal(crop,yr,chartAttr,cc));
+        const color=CROP_COLORS[crop]||C.accent;
+        const lbl=selCountries.length>1?crop+'/'+( PSD_CC_NAME[cc]?.split(' ')[0]||cc):crop;
+        series.push({label:lbl,vals,color,xLabels:selYears.map(y=>'MY'+y)});
+      }));
+    } else if(chartDim==='country'){
+      selCrops.forEach(crop=>selCountries.forEach((cc,i)=>{
+        const vals=selYears.map(yr=>getVal(crop,yr,chartAttr,cc));
+        series.push({label:PSD_CC_NAME[cc]?.split(' ')[0]||cc,vals,color:CC_COLORS[cc]||C.accent,xLabels:selYears.map(y=>'MY'+y)});
+      }));
+    }
+    return series;
+  },[tableData,selCrops,selCountries,selYears,chartAttr,chartDim]);
+
+  // SVG chart renderer
   const renderChart=()=>{
-    const W=800,H=280,PAD={l:70,r:20,t:30,b:50};
+    const W=820,H=300,PAD={l:72,r:20,t:24,b:54};
     const plotW=W-PAD.l-PAD.r,plotH=H-PAD.t-PAD.b;
-    const allVals=chartData.flatMap(d=>d.vals).filter(v=>v!=null);
-    if(!allVals.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data to chart');
-    const mn=Math.min(...allVals)*0.95,mx=Math.max(...allVals)*1.05,rng=mx-mn||1;
-    const xStep=plotW/(selectedYears.length-1||1);
-    const yPos=v=>PAD.t+plotH-(v-mn)/rng*plotH;
-    const xPos=i=>PAD.l+i*xStep;
-    const yTicks=5;
+    const allV=chartSeries.flatMap(s=>s.vals).filter(v=>v!=null&&!isNaN(v));
+    if(!allV.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data — select crops, countries and years above');
+    const mn=Math.min(...allV)*0.97,mx=Math.max(...allV)*1.03,rng=mx-mn||1;
+    const xLabels=chartSeries[0]?.xLabels||selYears.map(y=>'MY'+y);
+    const xP=i=>PAD.l+(i/(xLabels.length-1||1))*plotW;
+    const yP=v=>PAD.t+plotH-((v-mn)/rng)*plotH;
     const isPC=chartAttr===195;
-
+    const yFmt=v=>isPC?v.toFixed(1)+'%':Math.abs(v)>=10000?(v/1000).toFixed(0)+'K':v.toFixed(0);
+    const nTicks=4;
+    const attrLabel=PSD_ATTRS_DEF[chartAttr]?.n||'';
     return CE('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',overflow:'visible'}},
-      // Grid
-      Array.from({length:yTicks+1},(_,i)=>{
-        const v=mn+(rng/yTicks)*i;
-        const y=yPos(v);
-        return CE('g',{key:'g'+i},
-          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:1,strokeDasharray:'3,3'}),
-          CE('text',{x:PAD.l-6,y:y+3,textAnchor:'end',fontSize:8,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},
-            isPC?v.toFixed(1)+'%':v.toFixed(0))
+      // Title
+      CE('text',{x:PAD.l,y:14,fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px'},
+        attrLabel.toUpperCase()+' · '+(isPC?'%':PSD_CROPS[selCrops[0]]?.unit||'1000 MT')),
+      // Y grid + labels
+      ...Array.from({length:nTicks+1},(_,i)=>{
+        const v=mn+(rng/nTicks)*i,y=yP(v);
+        return CE('g',{key:'y'+i},
+          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:0.5,strokeDasharray:'2,3'}),
+          CE('text',{x:PAD.l-5,y:y+3,textAnchor:'end',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},yFmt(v))
         );
       }),
-      // X axis labels
-      selectedYears.map((yr,i)=>
-        CE('text',{key:'x'+i,x:xPos(i),y:H-PAD.b+16,textAnchor:'middle',fontSize:8,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},'MY'+yr)
-      ),
-      // X axis line
-      CE('line',{x1:PAD.l,y1:H-PAD.b,x2:W-PAD.r,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
-      // Y axis line
+      // Axes
       CE('line',{x1:PAD.l,y1:PAD.t,x2:PAD.l,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
-      // Y axis label
-      CE('text',{x:12,y:H/2,textAnchor:'middle',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace',transform:`rotate(-90,12,${H/2})`},
-        isPC?'Stocks/Use %':(PSD_CROPS[selectedCrops[0]]?.unit||'1000 MT')),
-      // Data series
-      chartData.map(({crop,vals,color})=>{
-        const pts=vals.map((v,i)=>v!=null?[xPos(i),yPos(v)]:null).filter(Boolean);
-        if(pts.length<1)return null;
-        if(chartType==='line'){
-          const validSegs=[];
-          let seg=[];
-          vals.forEach((v,i)=>{
-            if(v!=null)seg.push([xPos(i),yPos(v)]);
-            else if(seg.length){validSegs.push(seg);seg=[];}
-          });
-          if(seg.length)validSegs.push(seg);
-          return CE('g',{key:crop},
-            validSegs.map((s,si)=>
-              CE('polyline',{key:si,points:s.map(p=>p.join(',')).join(' '),fill:'none',stroke:color,strokeWidth:2,strokeLinejoin:'round'})
-            ),
-            pts.map((p,pi)=>CE('circle',{key:pi,cx:p[0],cy:p[1],r:3,fill:color})),
-            pts.map((p,pi)=>{
-              const v=vals.filter(v=>v!=null)[pi];
-              return CE('text',{key:'l'+pi,x:p[0],y:p[1]-7,textAnchor:'middle',fontSize:7,fill:color,fontFamily:'IBM Plex Mono,monospace'},
-                isPC?v.toFixed(1)+'%':v.toFixed(0));
-            })
+      CE('line',{x1:PAD.l,y1:H-PAD.b,x2:W-PAD.r,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
+      // X labels
+      xLabels.map((lb,i)=>CE('text',{key:'x'+i,x:xP(i),y:H-PAD.b+13,textAnchor:'middle',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},lb)),
+      // Series
+      ...chartSeries.map(({label,vals,color},si)=>{
+        const pts=vals.map((v,i)=>v!=null&&!isNaN(v)?[xP(i),yP(v)]:null);
+        const validPts=pts.filter(Boolean);
+        if(!validPts.length)return null;
+        if(chartType==='bar'){
+          const bw=Math.min(28,plotW/xLabels.length*0.7/Math.max(chartSeries.length,1));
+          const off=(si-(chartSeries.length-1)/2)*bw;
+          return CE('g',{key:'s'+si},
+            vals.map((v,i)=>{if(v==null||isNaN(v))return null;const bh=Math.max(1,(v-mn)/rng*plotH);const x=xP(i)+off-bw/2,y=yP(v);return CE('rect',{key:i,x,y,width:bw,height:bh,fill:color,opacity:0.8});})
           );
         }
-        // Bar chart
-        const bw=Math.min(30,xStep*0.7/selectedCrops.length);
-        const offset=(selectedCrops.indexOf(crop)-selectedCrops.length/2+0.5)*bw;
-        return CE('g',{key:crop},
-          vals.map((v,i)=>{
-            if(v==null)return null;
-            const bh=(v-mn)/rng*plotH;
-            const x=xPos(i)+offset-bw/2;
-            const y=yPos(v);
-            return CE('g',{key:i},
-              CE('rect',{x,y,width:bw,height:bh,fill:color,opacity:0.8}),
-              CE('text',{x:x+bw/2,y:y-3,textAnchor:'middle',fontSize:6,fill:color,fontFamily:'IBM Plex Mono,monospace'},isPC?v.toFixed(1)+'%':v.toFixed(0))
-            );
+        const pathD=pts.reduce((acc,p,i)=>acc+(p?(!acc.startsWith('M')||acc.endsWith('Z')?`M${p[0]},${p[1]}`:`L${p[0]},${p[1]}`):' Z '),'').replace(' Z M',' M');
+        return CE('g',{key:'s'+si},
+          CE('path',{d:pathD,fill:'none',stroke:color,strokeWidth:2,strokeLinejoin:'round'}),
+          validPts.map((p,pi)=>CE('circle',{key:pi,cx:p[0],cy:p[1],r:3,fill:color})),
+          validPts.map((p,pi)=>{
+            const v=vals.filter(v=>v!=null)[pi];
+            return CE('text',{key:'l'+pi,x:p[0],y:p[1]-7,textAnchor:'middle',fontSize:6.5,fill:color,fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},yFmt(v));
           })
         );
       }),
       // Legend
-      chartData.map(({crop,color},i)=>
-        CE('g',{key:'leg'+i,transform:`translate(${PAD.l+i*90},${H-12})`},
-          CE('rect',{x:0,y:-5,width:8,height:8,fill:color}),
-          CE('text',{x:11,y:2,fontSize:7,fill:C.text,fontFamily:'IBM Plex Mono,monospace'},crop)
-        )
+      CE('g',{transform:`translate(${PAD.l},${H-14})`},
+        chartSeries.slice(0,8).map(({label,color},i)=>CE('g',{key:'leg'+i,transform:`translate(${i*95},0)`},
+          CE('rect',{x:0,y:-6,width:8,height:8,fill:color}),
+          CE('text',{x:11,y:1,fontSize:6.5,fill:C.text,fontFamily:'IBM Plex Mono,monospace'},label.slice(0,12))
+        ))
       )
     );
   };
 
   return CE('div',{style:{padding:14,overflowY:'auto',flex:1,fontFamily:'IBM Plex Mono,monospace'}},
     // Header
-    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,borderBottom:'1px solid '+C.border,paddingBottom:10}},
+    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,paddingBottom:8,borderBottom:'1px solid '+C.border}},
       CE('div',null,
-        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:psd?.status==='live'?C.green:C.gold}},'USDA PSD WORKBENCH'+(isLoading?' · LOADING…':'')),
-        CE('div',{style:{fontSize:6,color:C.muted,marginTop:3}},'Production, Supply & Distribution · api.fas.usda.gov · All values in native API unit (1000 MT or 1000 Bales) · 3 decimal precision')
+        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:psd?.status==='live'?C.green:C.gold}},'USDA PSD WORKBENCH'+(isLoading?' · FETCHING…':'')),
+        CE('div',{style:{fontSize:6,color:C.muted,marginTop:2}},'Production, Supply & Distribution · api.fas.usda.gov · Numbers shown in native API units (see column headers) · 3-decimal precision')
       ),
       CE('div',{style:{display:'flex',gap:6}},
-        ['table','chart'].map(v=>CE('button',{key:v,onClick:()=>setViewMode(v),style:{fontSize:7,padding:'4px 12px',cursor:'pointer',background:v===viewMode?C.accent+'20':'transparent',border:'1px solid '+(v===viewMode?C.accent:C.border),color:v===viewMode?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px'}},v==='table'?'TABLE':'CHART'))
-      )
-    ),
-
-    // Controls row
-    CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12,marginBottom:12}},
-
-      // Crops selector
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'CROPS'),
-        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},
-          Object.keys(PSD_CROPS).map(c=>CE('button',{key:c,onClick:()=>toggleCrop(c),style:{fontSize:7,padding:'2px 8px',cursor:'pointer',background:selectedCrops.includes(c)?C.gold+'25':'transparent',border:'1px solid '+(selectedCrops.includes(c)?C.gold:C.border),color:selectedCrops.includes(c)?C.gold:C.muted,fontFamily:'IBM Plex Mono,monospace'}},c))
-        )
-      ),
-
-      // Attributes selector
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'ATTRIBUTES'),
-        CE('div',{style:{display:'flex',flexDirection:'column',gap:3}},
-          Object.entries(PSD_ATTR_MAP).map(([id,{n,short}])=>CE('label',{key:id,style:{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
-            CE('input',{type:'checkbox',checked:selectedAttrs.includes(parseInt(id)),onChange:()=>toggleAttr(parseInt(id)),style:{accentColor:C.accent,cursor:'pointer'}}),
-            CE('span',{style:{fontSize:7,color:selectedAttrs.includes(parseInt(id))?C.hi:C.muted}},n)
-          ))
-        )
-      ),
-
-      // Year range selector
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'MARKET YEARS'),
-        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},
-          PSD_CROP_YEARS.map(y=>CE('button',{key:y,onClick:()=>toggleYear(y),style:{fontSize:7,padding:'2px 8px',cursor:'pointer',background:selectedYears.includes(y)?C.accent+'25':'transparent',border:'1px solid '+(selectedYears.includes(y)?C.accent:C.border),color:selectedYears.includes(y)?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace'}},y))
-        )
-      ),
-
-      // Country + chart controls
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'GEOGRAPHY'),
-        CE('select',{value:selectedCountry,onChange:e=>setSelectedCountry(e.target.value),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace',width:'100%',marginBottom:8}},
-          Object.entries(PSD_COUNTRIES).map(([label,code])=>CE('option',{key:code,value:code},label))
-        ),
-        viewMode==='chart'&&CE('div',null,
-          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:4}},'CHART ATTRIBUTE'),
-          CE('select',{value:chartAttr,onChange:e=>setChartAttr(parseInt(e.target.value)),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace',width:'100%',marginBottom:6}},
-            Object.entries(PSD_ATTR_MAP).map(([id,{n}])=>CE('option',{key:id,value:id},n))
-          ),
-          CE('div',{style:{display:'flex',gap:4}},
-            ['line','bar'].map(t=>CE('button',{key:t,onClick:()=>setChartType(t),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',flex:1,background:t===chartType?C.accent+'20':'transparent',border:'1px solid '+(t===chartType?C.accent:C.border),color:t===chartType?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace'}},t.toUpperCase()))
-          )
-        )
+        ['table','chart'].map(v=>CE('button',{key:v,onClick:()=>setViewMode(v),style:{fontSize:7,padding:'4px 14px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px',background:v===viewMode?C.accent+'20':'transparent',border:'1px solid '+(v===viewMode?C.accent:C.border),color:v===viewMode?C.accent:C.muted}},v.toUpperCase()))
       )
     ),
 
     // No key state
-    !psdKey&&CE('div',{style:{padding:24,textAlign:'center',border:'1px solid '+C.border,background:C.s1,marginBottom:12}},
+    !psdKey&&CE('div',{style:{padding:20,textAlign:'center',border:'1px solid '+C.border,background:C.s1,marginBottom:12}},
       CE('div',{style:{fontSize:8,color:C.gold,marginBottom:6}},'USDA PSD KEY REQUIRED'),
-      CE('div',{style:{fontSize:7,color:C.muted}},'Add your free PSD API key in ⚙ Settings → USDA PSD'),
-      CE('a',{href:'https://apps.fas.usda.gov/opendataweb/',target:'_blank',style:{fontSize:7,color:C.accent,marginTop:4,display:'block'}},'→ Register free at apps.fas.usda.gov/opendataweb')
+      CE('div',{style:{fontSize:7,color:C.muted,marginBottom:8}},'Add your free key in ⚙ Settings → USDA PSD'),
+      CE('a',{href:'https://apps.fas.usda.gov/opendataweb/',target:'_blank',style:{fontSize:7,color:C.accent}},'→ Register free at apps.fas.usda.gov/opendataweb')
+    ),
+
+    // Controls — 4 columns
+    CE('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:12,padding:'10px',background:C.s1,border:'1px solid '+C.border}},
+      CE(ChipSel,{label:'CROPS (multi-select)',items:Object.keys(PSD_CROPS).map(c=>[c,c]),selected:selCrops,onToggle:c=>toggle(selCrops,setSelCrops,c),color:C.gold}),
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'ATTRIBUTES (multi-select)'),
+        CE('div',{style:{display:'flex',flexDirection:'column',gap:3}},
+          PSD_ATTR_IDS.map(id=>CE('label',{key:id,style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}},
+            CE('input',{type:'checkbox',checked:selAttrs.includes(id),onChange:()=>toggle(selAttrs,setSelAttrs,id),style:{accentColor:C.green,cursor:'pointer'}}),
+            CE('span',{style:{fontSize:7,color:selAttrs.includes(id)?C.hi:C.muted}},PSD_ATTRS_DEF[id]?.n)
+          ))
+        )
+      ),
+      CE(ChipSel,{label:'MARKET YEARS (multi-select)',items:PSD_YEARS.map(y=>[y,''+y]),selected:selYears,onToggle:toggleY,color:C.accent}),
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'COUNTRIES (multi-select)'),
+        CE('div',{style:{maxHeight:160,overflowY:'auto',display:'flex',flexDirection:'column',gap:2}},
+          Object.entries(PSD_CC).map(([name,code])=>CE('label',{key:code,style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer',padding:'1px 0'}},
+            CE('input',{type:'checkbox',checked:selCountries.includes(code),onChange:()=>toggle(selCountries,setSelCountries,code),style:{accentColor:C.rose,cursor:'pointer'}}),
+            CE('span',{style:{fontSize:7,color:selCountries.includes(code)?C.hi:C.muted}},name)
+          ))
+        )
+      )
+    ),
+
+    // Chart extra controls
+    viewMode==='chart'&&CE('div',{style:{display:'flex',gap:12,marginBottom:10,padding:'8px 10px',background:C.s1,border:'1px solid '+C.border}},
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'ATTRIBUTE TO CHART'),
+        CE('select',{value:chartAttr,onChange:e=>setChartAttr(parseInt(e.target.value)),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'3px 8px',fontFamily:'IBM Plex Mono,monospace'}},
+          PSD_ATTR_IDS.map(id=>CE('option',{key:id,value:id},PSD_ATTRS_DEF[id]?.n))
+        )
+      ),
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'CHART TYPE'),
+        CE('div',{style:{display:'flex',gap:4}},
+          ['line','bar'].map(t=>CE('button',{key:t,onClick:()=>setChartType(t),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',background:t===chartType?C.accent+'20':'transparent',border:'1px solid '+(t===chartType?C.accent:C.border),color:t===chartType?C.accent:C.muted}},t.toUpperCase()))
+        )
+      ),
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'SERIES DIMENSION'),
+        CE('div',{style:{display:'flex',gap:4}},
+          [['year','By Year'],['country','By Country']].map(([v,l])=>CE('button',{key:v,onClick:()=>setChartDim(v),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',background:v===chartDim?C.gold+'20':'transparent',border:'1px solid '+(v===chartDim?C.gold:C.border),color:v===chartDim?C.gold:C.muted}},l))
+        )
+      )
     ),
 
     // TABLE VIEW
     viewMode==='table'&&CE('div',{style:{overflowX:'auto'}},
       CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
         CE('thead',null,
+          // Crop + attribute header
           CE('tr',null,
-            CE('th',{style:{padding:'6px 8px',textAlign:'left',borderBottom:'2px solid '+C.accent,fontSize:6,letterSpacing:'1px',color:C.muted,background:C.s1,position:'sticky',left:0,zIndex:2,minWidth:140}},'CROP · ATTRIBUTE'),
-            selectedCrops.length>0&&selectedYears.map(yr=>
-              CE('th',{key:yr,style:{padding:'6px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:7,color:C.accent,background:C.s1,fontWeight:600,minWidth:90}},'MY'+yr)
+            CE('th',{style:{padding:'5px 8px',textAlign:'left',borderBottom:'2px solid '+C.accent,fontSize:6,letterSpacing:'1px',color:C.muted,background:C.s1,position:'sticky',left:0,minWidth:160,zIndex:2}},'CROP · ATTRIBUTE'),
+            selCrops.flatMap(crop=>
+              selCountries.flatMap(cc=>
+                selYears.map(yr=>
+                  CE('th',{key:crop+'_'+cc+'_'+yr,style:{padding:'5px 8px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6.5,color:C.accent,background:C.s1,minWidth:90,whiteSpace:'nowrap'}},
+                    (selCrops.length>1?crop.slice(0,3)+' ':'')+
+                    (selCountries.length>1?(PSD_CC_NAME[cc]?.split(' ')[0]||cc)+' ':'MY')+
+                    (selCountries.length>1?'\'':'')+String(yr).slice(2)
+                  )
+                )
+              )
             ),
-            // YoY change columns
-            selectedYears.length>1&&CE('th',{style:{padding:'6px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6,color:C.muted,background:C.s1,minWidth:70}},'YoY Δ')
+            selYears.length>1&&selCountries.length===1&&CE('th',{style:{padding:'5px 8px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6,color:C.muted,background:C.s1,minWidth:70}},'YoY Δ\n(latest)')
           )
         ),
         CE('tbody',null,
-          selectedCrops.flatMap(crop=>[
-            // Crop header row
-            CE('tr',{key:crop+'_hdr',style:{background:C.s2}},
-              CE('td',{colSpan:selectedYears.length+2,style:{padding:'5px 8px',fontSize:7,color:C.gold,letterSpacing:'2px',fontWeight:600,borderBottom:'1px solid '+C.border}},
-                crop+' · '+PSD_CROPS[crop]?.unit+' · '+(selectedCountry==='ALL'?'WORLD':PSD_COUNTRY_NAMES[selectedCountry]||selectedCountry))
+          selCrops.flatMap(crop=>[
+            // Crop section header
+            CE('tr',{key:crop+'_hdr'},
+              CE('td',{colSpan:selCrops.length*selCountries.length*selYears.length+2,
+                style:{padding:'5px 8px',fontSize:7,color:C.gold,letterSpacing:'2px',fontWeight:600,borderBottom:'1px solid '+C.border,background:C.s2}},
+                crop+' · '+PSD_CROPS[crop]?.unit)
             ),
-            // Attribute rows
-            ...selectedAttrs.map(attrId=>{
-              const {n,short}=PSD_ATTR_MAP[attrId]||{n:String(attrId),short:String(attrId)};
-              const vals=selectedYears.map(yr=>getValue(crop,yr,attrId,selectedCountry));
-              const lastVal=vals[vals.length-1];
-              const prevVal=vals[vals.length-2];
-              const yoy=lastVal!=null&&prevVal!=null?lastVal-prevVal:null;
-              const isKey=attrId===195||attrId===176||attrId===28;
-              const colFn=attrId===195?v=>suColor(v):()=>C.hi;
-              return CE('tr',{key:crop+'_'+attrId,style:{borderBottom:'1px solid '+C.border+'60'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+            ...selAttrs.map(attrId=>{
+              const {n,short,derived}=PSD_ATTRS_DEF[attrId]||{n:String(attrId),short:'?'};
+              const isPC=attrId===195;
+              const isKey=[195,176,28].includes(attrId);
+              const lastVals=selCountries.map(cc=>getVal(crop,selYears[selYears.length-1],attrId,cc));
+              const prevVals=selYears.length>1?selCountries.map(cc=>getVal(crop,selYears[selYears.length-2],attrId,cc)):null;
+              return CE('tr',{key:crop+'_'+attrId,
+                style:{borderBottom:'1px solid '+C.border+'50'},
+                onMouseEnter:e=>e.currentTarget.style.background=C.s2,
+                onMouseLeave:e=>e.currentTarget.style.background='transparent'},
                 CE('td',{style:{padding:'4px 8px',color:isKey?C.hi:C.text,position:'sticky',left:0,background:'inherit',borderRight:'1px solid '+C.border,fontWeight:isKey?600:400}},
-                  CE('span',{style:{fontSize:6,color:C.muted,marginRight:4}},short),n
+                  CE('span',{style:{fontSize:5.5,color:C.muted,marginRight:5}},short),n
                 ),
-                vals.map((v,yi)=>CE('td',{key:yi,style:{padding:'4px 10px',textAlign:'right',color:isKey&&attrId!==195?colFn(v):attrId===195?suColor(v):C.text,fontWeight:isKey?600:400,fontVariantNumeric:'tabular-nums'}},
-                  loading[`${crop}_${selectedYears[yi]}`]?CE('div',{style:{animation:'shimmer 1.5s infinite',width:60,height:10,background:C.border}}):fmtVal(v,attrId)
-                )),
-                selectedYears.length>1&&CE('td',{style:{padding:'4px 10px',textAlign:'right',color:yoy==null?C.muted:yoy>0?C.green:C.red,fontVariantNumeric:'tabular-nums'}},
-                  yoy!=null?(yoy>0?'+':'')+yoy.toFixed(3):'—'
-                )
+                selCountries.flatMap(cc=>
+                  selYears.map(yr=>{
+                    const v=getVal(crop,yr,attrId,cc);
+                    const loading=loadingKeys.has(crop+'_'+yr);
+                    return CE('td',{key:cc+'_'+yr,style:{padding:'4px 8px',textAlign:'right',fontVariantNumeric:'tabular-nums',color:isPC?suColor(v):isKey?C.hi:C.text,fontWeight:isKey?600:400}},
+                      loading&&v==null?CE('span',{style:{color:C.muted,animation:'shimmer 1.5s infinite'}},'…'):fmtN(v,isPC)
+                    );
+                  })
+                ),
+                // YoY delta (only if 1 country selected and multiple years)
+                selYears.length>1&&selCountries.length===1&&(()=>{
+                  const last=lastVals[0],prev=prevVals?.[0];
+                  const delta=last!=null&&prev!=null?last-prev:null;
+                  return CE('td',{style:{padding:'4px 8px',textAlign:'right',color:delta==null?C.muted:delta>0?C.green:C.red,fontVariantNumeric:'tabular-nums'}},
+                    delta!=null?(delta>0?'+':'')+fmtN(delta,isPC):'—'
+                  );
+                })()
               );
             })
           ])
@@ -1938,33 +1944,30 @@ function PSDWorkbench({psd,psdKey,fetchPSDYear,fetchPSDHistory}){
 
     // CHART VIEW
     viewMode==='chart'&&CE('div',null,
-      CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'12px 8px',marginBottom:8}},
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:8}},
-          (PSD_ATTR_MAP[chartAttr]?.n||'').toUpperCase()+' · '+(selectedCountry==='ALL'?'WORLD':PSD_COUNTRY_NAMES[selectedCountry]||selectedCountry)+' · '+(PSD_CROPS[selectedCrops[0]]?.unit||'1000 MT')
-        ),
+      CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'12px 6px 8px',marginBottom:10}},
         renderChart()
       ),
       // Data table below chart
-      CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'UNDERLYING DATA ('+PSD_ATTR_MAP[chartAttr]?.n+')'),
+      CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'DATA: '+PSD_ATTRS_DEF[chartAttr]?.n),
       CE('div',{style:{overflowX:'auto'}},
         CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
           CE('thead',null,CE('tr',null,
-            CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'CROP'),
-            selectedYears.map(yr=>CE('th',{key:yr,style:{padding:'4px 10px',textAlign:'right',borderBottom:'1px solid '+C.border,color:C.accent,fontSize:7}},'MY'+yr))
+            CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'SERIES'),
+            selYears.map(yr=>CE('th',{key:yr,style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,color:C.accent,fontSize:7}},'MY'+yr))
           )),
           CE('tbody',null,
-            chartData.map(({crop,vals,color})=>CE('tr',{key:crop,style:{borderBottom:'1px solid '+C.border+'40'}},
-              CE('td',{style:{padding:'4px 8px',color:color,fontWeight:600}},crop),
-              vals.map((v,i)=>CE('td',{key:i,style:{padding:'4px 10px',textAlign:'right',color:chartAttr===195?suColor(v):C.hi,fontVariantNumeric:'tabular-nums'}},fmtVal(v,chartAttr)))
+            chartSeries.map(({label,vals,color})=>CE('tr',{key:label,style:{borderBottom:'1px solid '+C.border+'40'}},
+              CE('td',{style:{padding:'4px 8px',color:color,fontWeight:600}},label),
+              vals.map((v,i)=>CE('td',{key:i,style:{padding:'4px 8px',textAlign:'right',color:chartAttr===195?suColor(v):C.hi,fontVariantNumeric:'tabular-nums'}},fmtN(v,chartAttr===195)))
             ))
           )
         )
       )
     ),
 
-    // Source note
-    CE('div',{style:{marginTop:12,fontSize:6,color:C.muted,borderTop:'1px solid '+C.border,paddingTop:8,lineHeight:1.8}},
-      'Source: USDA FAS Production, Supply & Distribution (PSD) Online Database · api.fas.usda.gov · Monthly updates · Units per crop: Corn/Soy/Wheat/Sugar/Cocoa/Palm Oil = 1,000 Metric Tons · Cotton = 1,000 480-lb Bales · Coffee = 1,000 60-kg Bags · Stocks/Use = Ending Stocks ÷ Dom. Consumption × 100'
+    // Source footer
+    CE('div',{style:{marginTop:10,fontSize:6,color:C.muted,borderTop:'1px solid '+C.border,paddingTop:6,lineHeight:1.8}},
+      'Source: USDA FAS PSD Online · api.fas.usda.gov · Units: Corn/Soy/Wheat/Sugar/Cocoa/Palm Oil = 1,000 MT · Cotton = 1,000 480-lb Bales · Coffee = 1,000 60-kg Bags · Stocks/Use = Ending Stocks ÷ Dom.Consumption × 100 · Country codes verified from live API'
     )
   );
 }
