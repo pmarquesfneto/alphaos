@@ -173,9 +173,9 @@ async function fetchSupplyChain(){
 }
 
 /* 8. CB Hawkishness — Claude NLP live scoring */
-async function fetchHawkishness(){
+async function fetchHawkishness(claudeKey){
   try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    const r=await fetch('https://corsproxy.io/?'+encodeURIComponent('https://api.anthropic.com/v1/messages'),{method:'POST',headers:{'Content-Type':'application/json','x-api-key':claudeKey||localStorage.getItem('aos_claude_key')||'','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({
       model:'claude-sonnet-4-20250514',max_tokens:300,
       system:'You are a monetary policy analyst. Score each central bank hawkishness 0-100 (0=very dovish, 100=very hawkish). Return ONLY valid JSON, no other text:\n{"FED":{"score":72,"change":"+4","bias":"HAWKISH"},"ECB":{"score":38,"change":"-18","bias":"DOVISH"},"BOJ":{"score":45,"change":"+5","bias":"NEUTRAL"},"BOE":{"score":61,"change":"+2","bias":"SLIGHTLY HAWKISH"},"RBA":{"score":55,"change":"+3","bias":"NEUTRAL"},"SNB":{"score":29,"change":"-6","bias":"DOVISH"}}',
       messages:[{role:'user',content:'Score current CB hawkishness Q1 2026. FED: holding, uncertain cut timing. ECB: cutting. BOJ: normalizing. BOE: holding, sticky services inflation. RBA: neutral watch. SNB: cutting. Return only the JSON object.'}]
@@ -190,17 +190,17 @@ async function fetchHawkishness(){
 /* 9. FRED — key-gated */
 async function fetchFRED(key){
   if(!key)return null;
-  const series=[{id:'FEDFUNDS',l:'Fed Funds'},{id:'CPIAUCSL',l:'CPI YoY'},{id:'UNRATE',l:'Unemployment'},{id:'DGS2',l:'2Y Yield'},{id:'DGS10',l:'10Y Yield'},{id:'T10Y2Y',l:'2s10s Spread'},{id:'T10YIE',l:'10Y Breakeven'},{id:'BAMLH0A0HYM2',l:'HY Spread'}];
+  const series=[{id:'FEDFUNDS',l:'Fed Funds'},{id:'CPIAUCSL',l:'CPI YoY',yoy:true},{id:'UNRATE',l:'Unemployment'},{id:'DGS2',l:'2Y Yield'},{id:'DGS10',l:'10Y Yield'},{id:'T10Y2Y',l:'2s10s Spread'},{id:'T10YIE',l:'10Y Breakeven'},{id:'BAMLH0A0HYM2',l:'HY Spread'}];
   const out=[];
   for(const s of series){
     try{
-      const fredUrl='https://api.stlouisfed.org/fred/series/observations?series_id='+s.id+'&api_key='+key+'&file_type=json&sort_order=desc&limit=8';
+      const fredUrl='https://api.stlouisfed.org/fred/series/observations?series_id='+s.id+'&api_key='+key+'&file_type=json&sort_order=desc&limit='+(s.yoy?14:8);
       const urls=[fredUrl,'https://corsproxy.io/?'+encodeURIComponent(fredUrl)];
       let d=null;
       for(const url of urls){try{const r=await fetch(url);if(!r.ok)continue;d=await r.json();if(d.observations)break;}catch(e){}}
       if(!d)continue;
       const obs=(d.observations||[]).filter(o=>o.value!=='.');
-      if(obs[0])out.push({id:s.id,label:s.l,value:parseFloat(obs[0].value),prev:parseFloat(obs[1]?.value||obs[0].value),date:obs[0].date,hist:obs.slice(0,8).reverse().map(o=>parseFloat(o.value))});
+      if(obs[0]){const rawVal=parseFloat(obs[0].value);const val=s.yoy&&obs[12]?((rawVal/parseFloat(obs[12].value))-1)*100:rawVal;const prevRaw=parseFloat(obs[1]?.value||obs[0].value);const prev=s.yoy&&obs[13]?((prevRaw/parseFloat(obs[13].value))-1)*100:prevRaw;out.push({id:s.id,label:s.l,value:Math.round(val*100)/100,prev:Math.round(prev*100)/100,date:obs[0].date,hist:obs.slice(0,s.yoy?13:8).map((o,i,a)=>s.yoy&&a[i+12]?Math.round(((parseFloat(o.value)/parseFloat(a[i+12].value))-1)*10000)/100:parseFloat(o.value)).filter((_,i,a)=>!s.yoy||i<a.length-12).reverse()});}
     }catch(e){}
   }
   return out.length?{status:'live',src:'FRED',data:out}:null;
@@ -239,7 +239,7 @@ const PSD_CROPS={
   CORN:     {code:'0440000',unit:'1000 MT',  du:'MMT',     div:1000},
   SOYBEANS: {code:'2222000',unit:'1000 MT',  du:'MMT',     div:1000},
   WHEAT:    {code:'0410000',unit:'1000 MT',  du:'MMT',     div:1000},
-  COTTON:   {code:'4200000',unit:'1000 Bales',du:'M Bales',div:1000},
+  COTTON:   {code:'2631000',unit:'1000 480-lb Bales',du:'K Bales',div:1},
   COFFEE:   {code:'0711100',unit:'1000 Bags',du:'M Bags',  div:1000},
   SUGAR:    {code:'0611200',unit:'1000 MT',  du:'MMT',     div:1000},
   COCOA:    {code:'0721200',unit:'1000 MT',  du:'MMT',     div:1000},
@@ -692,53 +692,209 @@ function AltDataModule({noaa,gdelt,eia,usda,enso,setDetail,ams}){
 }
 
 function NLPModule({hawk,sc,geo,setDetail}){
+  const CE=React.createElement;
+  const [nlpView,setNlpView]=useState('hawkishness'); // hawkishness | divergence | supplychain | geopolitical
   const HS=hawk?.scores||{},SC=sc||[],GR=geo||[];
-  const fed=HS.FED?.score||0,ecb=HS.ECB?.score||0,diff=fed-ecb;
-  const divMsg=Object.keys(HS).length&&Math.abs(diff)>15?'⚡ FED-ECB spread '+(diff>0?'+':'')+diff+'pt → '+(diff>0?'EUR/USD LONG':'USD LONG')+' signal active':Object.keys(HS).length?'FED/ECB spread: '+(diff>0?'+':'')+diff+'pt — monitoring for divergence':'Loading…';
-  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
-    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
-      card([
-        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}},
-          React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:hawk?.status==='live'?C.green:C.muted}},'CB HAWKISHNESS — CLAUDE NLP SCORING'),React.createElement('div',{style:{fontSize:6,color:C.muted}},hawk?.status==='live'?'LIVE · '+hawk.src+' · '+new Date(hawk.ts||Date.now()).toLocaleTimeString():'CLAUDE IS SCORING CB STANCES…')),
-          React.createElement(Dot,{s:hawk?.status||'loading'})
-        ),
-        Object.keys(HS).length>0?[
-          React.createElement('div',{key:'bars',style:{marginTop:4}},Object.entries(HS).map(([n,d])=>React.createElement('div',{key:n,onClick:()=>setDetail&&setDetail({type:'hawk',data:{cb:n,...d}}),style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
-            React.createElement('span',{style:{fontSize:8,color:C.text,width:32}},n),
-            React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
-            React.createElement('span',{style:{fontSize:10,color:d.score>65?C.red:d.score>45?C.gold:C.green,width:28,textAlign:'right',fontWeight:600}},d.score),
-            React.createElement('span',{style:{fontSize:7,color:d.change?.startsWith('-')?C.green:C.red,width:30,textAlign:'right'}},d.change)
-          ))),
-          React.createElement('div',{key:'div',style:{marginTop:10,fontSize:7,color:C.gold,background:C.gold+'0a',border:'1px solid '+C.gold+'20',padding:8}},divMsg)
-        ]:[0,1,2,3,4,5].map(i=>React.createElement('div',{key:i,style:{display:'flex',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,alignItems:'center'}},React.createElement(Skel,{w:30,h:12}),React.createElement(Skel,{w:100,h:8}),React.createElement(Skel,{w:24,h:12})))
-      ]),
-      card([
-        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}},
-          React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:SC.some(s=>s.live)?C.green:C.muted}},'SUPPLY CHAIN STRESS — GDELT DERIVED'),React.createElement('div',{style:{fontSize:6,color:C.muted}},SC.some(s=>s.live)?'LIVE · GDELT 7-day article volume + sentiment · 8 sectors':'QUERYING GDELT…')),
-          React.createElement(Dot,{s:SC.some(s=>s.live)?'live':SC.length?'error':'loading'})
-        ),
-        SC.length>0?React.createElement('div',null,SC.map(s=>React.createElement('div',{key:s.s,onClick:()=>setDetail&&setDetail({type:'sc',data:s}),style:{display:'flex',alignItems:'center',gap:8,padding:'4px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
-          React.createElement('span',{style:{fontSize:8,color:C.text,flex:1}},s.s),
-          React.createElement('div',{style:{width:80,height:3,background:C.track,flexShrink:0}},React.createElement('div',{style:{height:'100%',width:s.idx+'%',background:s.idx>65?C.red:s.idx>50?C.gold:C.green}})),
-          s.live?badge(s.idx+'',s.idx>65?C.red:s.idx>50?C.gold:C.green):badge('?',C.muted)
-        ))):React.createElement('div',{style:{padding:'10px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT SECTOR DATA…')
-      ])
+  const CBs=['FED','ECB','BOJ','BOE','RBA','SNB'];
+  const CBnames={FED:'Federal Reserve',ECB:'European Central Bank',BOJ:'Bank of Japan',BOE:'Bank of England',RBA:'Reserve Bank of Australia',SNB:'Swiss National Bank'};
+  const CBccy={FED:'USD',ECB:'EUR',BOJ:'JPY',BOE:'GBP',RBA:'AUD',SNB:'CHF'};
+  const hawkCol=s=>s>65?C.red:s>45?C.gold:C.green;
+
+  // Divergence pairs (all combinations)
+  const divPairs=[];
+  const cbKeys=Object.keys(HS);
+  for(let i=0;i<cbKeys.length;i++)for(let j=i+1;j<cbKeys.length;j++){
+    const a=cbKeys[i],b=cbKeys[j];
+    const diff=(HS[a]?.score||0)-(HS[b]?.score||0);
+    divPairs.push({a,b,diff,abs:Math.abs(diff),ccy:CBccy[a]+'/'+CBccy[b]});
+  }
+  divPairs.sort((a,b)=>b.abs-a.abs);
+
+  const scColor=v=>v>65?C.red:v>50?C.gold:C.green;
+  const tabStyle=v=>({fontSize:7,padding:'4px 12px',cursor:'pointer',background:v===nlpView?C.accent+'20':'transparent',border:'1px solid '+(v===nlpView?C.accent:C.border),color:v===nlpView?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace'});
+
+  return CE('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    // View tabs
+    CE('div',{style:{display:'flex',gap:4,marginBottom:12,borderBottom:'1px solid '+C.border,paddingBottom:10}},
+      [['hawkishness','CB HAWKISHNESS'],['divergence','CB DIVERGENCE'],['supplychain','SUPPLY CHAIN'],['geopolitical','GEO RISK']].map(([v,l])=>
+        CE('button',{key:v,onClick:()=>setNlpView(v),style:tabStyle(v)},l)
+      )
     ),
-    card([cardH('GDELT GEOPOLITICAL INTELLIGENCE',GR.some(g=>g.live)?'LIVE · GDELT 7-day article analysis · real conflict + economic indices':'QUERYING GDELT…',GR.some(g=>g.live)?C.green:C.muted),
-      GR.length>0?
-        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginTop:8}},
-          GR.map(g=>React.createElement('div',{key:g.r,onClick:()=>setDetail&&setDetail({type:'geo',data:g}),style:{background:C.s2,border:'1px solid '+C.border,padding:12,cursor:'pointer',transition:'border-color 0.15s'},onMouseEnter:e=>e.currentTarget.style.borderColor=C.accent,onMouseLeave:e=>e.currentTarget.style.borderColor=C.border},
-            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},React.createElement('div',{style:{fontSize:7,color:C.muted}},g.r),g.live?badge('LIVE',C.green):badge('?',C.muted)),
-            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('CONFLICT IDX'),lbl(g.ci+'',g.ci>60?C.red:C.gold,{fontSize:12,fontWeight:600})),
-            React.createElement('div',{style:{height:3,background:C.track,marginBottom:10}},React.createElement('div',{style:{height:'100%',width:g.ci+'%',background:g.ci>60?C.red:C.gold}})),
-            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('ECONOMIC IDX'),lbl(g.ei+'',g.ei>55?C.green:C.gold,{fontSize:12,fontWeight:600})),
-            React.createElement('div',{style:{height:3,background:C.track}},React.createElement('div',{style:{height:'100%',width:g.ei+'%',background:g.ei>55?C.green:C.gold}})),
-            g.live&&React.createElement('div',{style:{marginTop:6,fontSize:6,color:C.muted}},g.n+' articles · avg tone '+g.tone)
-          ))):
-        React.createElement('div',{style:{padding:'12px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT GEOPOLITICAL DATA…')
-    ])
+
+    // === CB HAWKISHNESS VIEW ===
+    nlpView==='hawkishness'&&CE('div',null,
+      CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        CE('div',null,
+          CE('div',{style:{fontSize:7,letterSpacing:'2px',color:hawk?.status==='live'?C.green:C.muted}},'CB HAWKISHNESS — CLAUDE NLP REAL-TIME SCORING'),
+          CE('div',{style:{fontSize:6,color:C.muted}},hawk?.status==='live'?'LIVE · '+hawk.src+' · Updated: '+new Date(hawk.ts||Date.now()).toLocaleTimeString():'CLAUDE IS SCORING CB STANCES…')
+        ),
+        CE(Dot,{s:hawk?.status||'loading'})
+      ),
+      // Full CB table
+      Object.keys(HS).length>0?
+        CE('div',null,
+          // Header
+          CE('div',{style:{display:'grid',gridTemplateColumns:'80px 1fr 60px 80px 80px',gap:6,padding:'0 0 6px',borderBottom:'1px solid '+C.border,marginBottom:4}},
+            ['CB','HAWKISHNESS BAR','SCORE','CHANGE','BIAS'].map((h,i)=>CE('span',{key:i,style:{fontSize:6,color:C.muted,letterSpacing:'1px',textAlign:i>1?'center':'left'}},h))
+          ),
+          Object.entries(HS).map(([n,d])=>CE('div',{key:n,
+            onClick:()=>setDetail&&setDetail({type:'hawk',data:{cb:n,...d}}),
+            style:{display:'grid',gridTemplateColumns:'80px 1fr 60px 80px 80px',gap:6,padding:'7px 0',borderBottom:'1px solid '+C.border+'60',cursor:'pointer',alignItems:'center'},
+            onMouseEnter:e=>e.currentTarget.style.background=C.s2,
+            onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+            CE('div',null,
+              CE('div',{style:{fontSize:8,color:C.hi,fontWeight:600}},n),
+              CE('div',{style:{fontSize:6,color:C.muted}},CBccy[n]||'')
+            ),
+            CE('div',{style:{position:'relative',height:12,background:C.track,borderRadius:1}},
+              CE('div',{style:{position:'absolute',left:0,top:0,height:'100%',width:d.score+'%',background:hawkCol(d.score),borderRadius:1,transition:'width 0.3s'}}),
+              CE('div',{style:{position:'absolute',left:'50%',top:0,height:'100%',width:1,background:C.border}})
+            ),
+            CE('div',{style:{fontSize:14,fontWeight:700,color:hawkCol(d.score),textAlign:'center'}},d.score),
+            CE('div',{style:{fontSize:9,color:d.change?.startsWith('-')?C.green:C.red,textAlign:'center',fontWeight:600}},d.change||'—'),
+            CE('div',{style:{fontSize:7,color:hawkCol(d.score),textAlign:'center',letterSpacing:'1px'}},d.bias||'—')
+          )),
+          // Aggregate heatmap
+          CE('div',{style:{marginTop:12,padding:'10px',background:C.s2,border:'1px solid '+C.border}},
+            CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:8}},'POLICY SPECTRUM'),
+            CE('div',{style:{position:'relative',height:8,background:`linear-gradient(to right,${C.green},${C.gold},${C.red})`,borderRadius:3,marginBottom:16}},
+              Object.entries(HS).map(([n,d])=>CE('div',{key:n,
+                style:{position:'absolute',left:d.score+'%',top:-10,transform:'translateX(-50%)',textAlign:'center'}},
+                CE('div',{style:{fontSize:5,color:C.muted,marginBottom:2}},n),
+                CE('div',{style:{width:2,height:16,background:hawkCol(d.score),margin:'0 auto'}}),
+                CE('div',{style:{fontSize:6,color:hawkCol(d.score),fontWeight:700}},d.score)
+              ))
+            ),
+            CE('div',{style:{display:'flex',justifyContent:'space-between',fontSize:6,color:C.muted,marginTop:4}},
+              CE('span',{style:{color:C.green}},'◀ DOVISH (0)'),
+              CE('span','NEUTRAL (50)'),
+              CE('span',{style:{color:C.red}},'HAWKISH (100) ▶')
+            )
+          )
+        ):
+        CE('div',{style:{padding:'16px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'Claude NLP scoring central bank stances…')
+    ),
+
+    // === CB DIVERGENCE VIEW ===
+    nlpView==='divergence'&&CE('div',null,
+      CE('div',{style:{fontSize:7,letterSpacing:'2px',color:hawk?.status==='live'?C.green:C.muted,marginBottom:4}},'CB POLICY DIVERGENCE MATRIX'),
+      CE('div',{style:{fontSize:6,color:C.muted,marginBottom:12}},'Larger spread = stronger divergence trade signal · Click any pair for details'),
+      // Divergence pairs ranked
+      Object.keys(HS).length>0?CE('div',null,
+        CE('div',{style:{display:'grid',gridTemplateColumns:'100px 60px 60px 1fr 80px 100px',gap:6,padding:'0 0 6px',borderBottom:'1px solid '+C.border,marginBottom:4}},
+          ['PAIR','CB A','CB B','SPREAD','SIGNAL','TRADE IDEA'].map((h,i)=>CE('span',{key:i,style:{fontSize:6,color:C.muted,letterSpacing:'1px'}},'h'===h?'':h))
+        ),
+        divPairs.slice(0,10).map(({a,b,diff,abs,ccy},i)=>{
+          const sig=abs>25?'STRONG':abs>15?'MODERATE':abs>8?'WATCH':'NEUTRAL';
+          const sigCol=abs>25?C.green:abs>15?C.gold:abs>8?C.accent:C.muted;
+          const trade=diff>0?`LONG ${CBccy[a]} vs ${CBccy[b]}`:`LONG ${CBccy[b]} vs ${CBccy[a]}`;
+          return CE('div',{key:i,style:{display:'grid',gridTemplateColumns:'100px 60px 60px 1fr 80px 100px',gap:6,padding:'6px 0',borderBottom:'1px solid '+C.border+'60',alignItems:'center'}},
+            CE('span',{style:{fontSize:8,color:C.hi,fontWeight:600}},ccy),
+            CE('div',{style:{textAlign:'center'}},
+              CE('span',{style:{fontSize:9,fontWeight:700,color:hawkCol(HS[a]?.score||0)}},HS[a]?.score||0),
+              CE('div',{style:{fontSize:5,color:C.muted}},a)
+            ),
+            CE('div',{style:{textAlign:'center'}},
+              CE('span',{style:{fontSize:9,fontWeight:700,color:hawkCol(HS[b]?.score||0)}},HS[b]?.score||0),
+              CE('div',{style:{fontSize:5,color:C.muted}},b)
+            ),
+            CE('div',null,
+              CE('div',{style:{height:4,background:C.track,borderRadius:2}},
+                CE('div',{style:{height:'100%',width:Math.min(abs/50*100,100)+'%',background:sigCol,borderRadius:2}})
+              ),
+              CE('span',{style:{fontSize:7,color:sigCol,fontWeight:600}},(diff>0?'+':'')+diff+' pts')
+            ),
+            CE('span',{style:{fontSize:7,color:sigCol,fontWeight:600,letterSpacing:'1px'}},sig),
+            CE('span',{style:{fontSize:6,color:C.muted,lineHeight:1.4}},abs>8?trade:'—')
+          );
+        }),
+        // G6 summary
+        CE('div',{style:{marginTop:12,padding:'10px',background:C.s2,border:'1px solid '+C.border}},
+          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'DIVERGENCE SIGNAL SUMMARY'),
+          CE('div',{style:{fontSize:7,color:C.text,lineHeight:1.8}},
+            divPairs.filter(p=>p.abs>15).length>0?
+              divPairs.filter(p=>p.abs>15).map(p=>`${p.ccy}: ${p.abs>25?'STRONG':'MODERATE'} (${Math.abs(p.diff)}pt spread)`).join(' · '):
+              'No significant divergences detected (all spreads <15pts)'
+          )
+        )
+      ):CE('div',{style:{color:C.muted,fontSize:8,padding:16}},'Loading CB scores…')
+    ),
+
+    // === SUPPLY CHAIN VIEW ===
+    nlpView==='supplychain'&&CE('div',null,
+      CE('div',{style:{fontSize:7,letterSpacing:'2px',color:SC.some(s=>s.live)?C.green:C.muted,marginBottom:4}},'SUPPLY CHAIN STRESS INDEX — GDELT DERIVED'),
+      CE('div',{style:{fontSize:6,color:C.muted,marginBottom:12}},'Derived from 7-day GDELT article volume & sentiment · 0=None · 50=Normal · 100=Extreme'),
+      SC.length>0?CE('div',null,
+        // Header
+        CE('div',{style:{display:'grid',gridTemplateColumns:'110px 1fr 50px 70px',gap:6,padding:'0 0 6px',borderBottom:'1px solid '+C.border,marginBottom:4}},
+          ['SECTOR','STRESS INDEX','IDX','ARTICLES'].map((h,i)=>CE('span',{key:i,style:{fontSize:6,color:C.muted,letterSpacing:'1px'}},'h'===h?'':h))
+        ),
+        [...SC].sort((a,b)=>b.idx-a.idx).map(s=>CE('div',{key:s.s,
+          onClick:()=>setDetail&&setDetail({type:'sc',data:s}),
+          style:{display:'grid',gridTemplateColumns:'110px 1fr 50px 70px',gap:6,padding:'6px 0',borderBottom:'1px solid '+C.border+'60',cursor:'pointer',alignItems:'center'},
+          onMouseEnter:e=>e.currentTarget.style.background=C.s2,
+          onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+          CE('span',{style:{fontSize:8,color:C.hi,fontWeight:600}},s.s),
+          CE('div',{style:{position:'relative',height:8,background:C.track,borderRadius:2}},
+            CE('div',{style:{height:'100%',width:s.idx+'%',background:scColor(s.idx),borderRadius:2}}),
+            CE('div',{style:{position:'absolute',left:'50%',top:0,height:'100%',width:1,background:C.border+'80'}})
+          ),
+          CE('span',{style:{fontSize:10,fontWeight:700,color:scColor(s.idx),textAlign:'right'}},s.idx),
+          CE('span',{style:{fontSize:7,color:C.muted,textAlign:'right'}},s.n||'—')
+        )),
+        // Heatmap summary
+        CE('div',{style:{marginTop:12,display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}},
+          [...SC].sort((a,b)=>b.idx-a.idx).slice(0,4).map(s=>
+            CE('div',{key:s.s,style:{padding:'8px',background:scColor(s.idx)+'15',border:'1px solid '+scColor(s.idx)+'40',textAlign:'center'}},
+              CE('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},s.s),
+              CE('div',{style:{fontSize:16,fontWeight:700,color:scColor(s.idx)}},s.idx),
+              CE('div',{style:{fontSize:6,color:scColor(s.idx)}},s.idx>65?'HIGH':s.idx>50?'ELEVATED':'NORMAL')
+            )
+          )
+        )
+      ):CE('div',{style:{color:C.muted,fontSize:8,padding:16,animation:'shimmer 1.5s infinite'}},'Querying GDELT for supply chain signals…')
+    ),
+
+    // === GEOPOLITICAL VIEW ===
+    nlpView==='geopolitical'&&CE('div',null,
+      CE('div',{style:{fontSize:7,letterSpacing:'2px',color:GR.some(g=>g.live)?C.green:C.muted,marginBottom:4}},'GEOPOLITICAL RISK INTELLIGENCE — GDELT 7-DAY'),
+      CE('div',{style:{fontSize:6,color:C.muted,marginBottom:12}},'Conflict Index: negative event coverage · Economic Index: positive economic coverage · Source: GDELT Global Database'),
+      GR.length>0?CE('div',null,
+        GR.map(g=>CE('div',{key:g.r,
+          onClick:()=>setDetail&&setDetail({type:'geo',data:g}),
+          style:{marginBottom:10,padding:'10px 12px',background:C.s2,border:'1px solid '+C.border,cursor:'pointer',transition:'border-color 0.15s'},
+          onMouseEnter:e=>e.currentTarget.style.borderColor=C.accent,
+          onMouseLeave:e=>e.currentTarget.style.borderColor=C.border},
+          CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+            CE('div',null,
+              CE('div',{style:{fontSize:8,color:C.hi,fontWeight:600}},g.r),
+              CE('div',{style:{fontSize:6,color:C.muted}},g.n?' · '+g.n+' articles':'')
+            ),
+            g.live?badge('LIVE',C.green):badge('?',C.muted)
+          ),
+          CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+            CE('div',null,
+              CE('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'CONFLICT INDEX'),
+              CE('div',{style:{height:6,background:C.track,borderRadius:3,marginBottom:2}},
+                CE('div',{style:{height:'100%',width:g.ci+'%',background:g.ci>60?C.red:C.gold,borderRadius:3}})
+              ),
+              CE('div',{style:{fontSize:10,fontWeight:700,color:g.ci>60?C.red:C.gold}},g.ci+'/100')
+            ),
+            CE('div',null,
+              CE('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'ECONOMIC INDEX'),
+              CE('div',{style:{height:6,background:C.track,borderRadius:3,marginBottom:2}},
+                CE('div',{style:{height:'100%',width:g.ei+'%',background:g.ei>55?C.green:C.gold,borderRadius:3}})
+              ),
+              CE('div',{style:{fontSize:10,fontWeight:700,color:g.ei>55?C.green:C.gold}},g.ei+'/100')
+            )
+          ),
+          g.tone!=null&&CE('div',{style:{marginTop:6,fontSize:6,color:parseFloat(g.tone)>0?C.green:C.red}},'Avg news tone: '+g.tone+' · '+g.n+' articles analyzed')
+        ))
+      ):CE('div',{style:{color:C.muted,fontSize:8,padding:16,animation:'shimmer 1.5s infinite'}},'Querying GDELT geopolitical data…')
+    )
   );
 }
+
 
 function CommodModule({cot,prices,usda,setDetail,psd,esr}){
   const [crop,setCrop]=useState('CORN');
@@ -957,13 +1113,13 @@ function CommodModule({cot,prices,usda,setDetail,psd,esr}){
 
 
 
-function BriefingModule({ctx}){
+function BriefingModule({ctx,claudeKey}){
   const [brief,setBrief]=useState(null);
   const [loading,setLoading]=useState(false);
   const gen=async()=>{
     setLoading(true);
     try{
-      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,system:ctx||'You are an institutional macro commodity hedge fund morning brief AI. Be data-driven.',messages:[{role:'user',content:'Generate today\'s morning brief with: **REGIME ASSESSMENT** (2 sentences) **TOP SIGNALS & TRADE IDEAS** (3 bullets with live data numbers) **KEY CATALYSTS TODAY** (scheduled releases) **RISK WATCH** (2 bullets). Use only live data from your context. Flag unavailable data.'}]})});
+      const r=await fetch('https://corsproxy.io/?'+encodeURIComponent('https://api.anthropic.com/v1/messages'),{method:'POST',headers:{'Content-Type':'application/json','x-api-key':claudeKey||localStorage.getItem('aos_claude_key')||'','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,system:ctx||'You are an institutional macro commodity hedge fund morning brief AI. Be data-driven.',messages:[{role:'user',content:'Generate today\'s morning brief with: **REGIME ASSESSMENT** (2 sentences) **TOP SIGNALS & TRADE IDEAS** (3 bullets with live data numbers) **KEY CATALYSTS TODAY** (scheduled releases) **RISK WATCH** (2 bullets). Use only live data from your context. Flag unavailable data.'}]})});
       const d=await r.json();setBrief(d.content?.[0]?.text||'Error generating brief.');
     }catch(e){setBrief('Claude API error: '+e.message);}
     setLoading(false);
@@ -971,20 +1127,22 @@ function BriefingModule({ctx}){
   return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1,maxWidth:880,margin:'0 auto',width:'100%'}},
     React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
       React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'3px',color:C.muted,marginBottom:2}},'MORNING INTELLIGENCE BRIEF · AI-GENERATED FROM LIVE DATA'),React.createElement('div',{style:{fontSize:9,color:C.text}},new Date().toDateString()+' · '+new Date().toLocaleTimeString())),
-      React.createElement('button',{onClick:gen,disabled:loading,style:{background:loading?C.muted+'20':C.rose+'15',border:'1px solid '+(loading?C.muted:C.rose)+'40',color:loading?C.muted:C.rose,fontFamily:'IBM Plex Mono,monospace',fontSize:8,letterSpacing:'1px',padding:'7px 18px',cursor:loading?'default':'pointer'}},loading?'⧐  GENERATING…':'⚡  GENERATE AI BRIEF')
+      !claudeKey&&React.createElement('div',{style:{fontSize:7,color:C.gold,padding:'6px 10px',background:C.gold+'10',border:'1px solid '+C.gold+'30',marginBottom:8}},'⚠ Add your Claude API key in ⚙ Settings to use AI Brief'),
+      React.createElement('button',{onClick:gen,disabled:loading||!claudeKey,style:{background:loading?C.muted+'20':C.rose+'15',border:'1px solid '+(loading?C.muted:C.rose)+'40',color:loading?C.muted:C.rose,fontFamily:'IBM Plex Mono,monospace',fontSize:8,letterSpacing:'1px',padding:'7px 18px',cursor:loading?'default':'pointer'}},loading?'⧐  GENERATING…':'⚡  GENERATE AI BRIEF')
     ),
     card([brief?React.createElement('div',{style:{whiteSpace:'pre-wrap',fontSize:9,color:C.text,lineHeight:1.9,padding:'4px 0'}},brief):React.createElement('div',{style:{textAlign:'center',padding:'40px 0',color:C.muted,fontSize:8,letterSpacing:'2px'}},'CLICK ⚡ GENERATE — BRIEF USES ALL LIVE DATA CURRENTLY LOADED')]),
     React.createElement('div',{style:{marginTop:8,padding:'8px 12px',background:C.s2,border:'1px solid '+C.border,fontSize:7,color:C.muted}})
   );
 }
 
-function QueryModule({ctx}){
+function QueryModule({ctx,claudeKey}){
   const [msgs,setMsgs]=useState([]);const [inp,setInp]=useState('');const [loading,setLoading]=useState(false);const bottomRef=useRef(null);
   useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'});},[msgs,loading]);
   const send=async t=>{
     if(!t.trim()||loading)return;
+    if(!claudeKey&&!localStorage.getItem('aos_claude_key')){setMsgs(m=>[...m,{role:'assistant',content:'⚠ Claude API key required. Go to ⚙ Settings → Claude API Key and enter your key from console.anthropic.com/settings/keys'}]);return;}
     const nm=[...msgs,{role:'user',content:t}];setMsgs(nm);setInp('');setLoading(true);
-    try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:ctx,messages:nm.map(m=>({role:m.role,content:m.content}))})});const d=await r.json();setMsgs(m=>[...m,{role:'assistant',content:d.content?.[0]?.text||'Error.'}]);}
+    try{const r=await fetch('https://corsproxy.io/?'+encodeURIComponent('https://api.anthropic.com/v1/messages'),{method:'POST',headers:{'Content-Type':'application/json','x-api-key':claudeKey||localStorage.getItem('aos_claude_key')||'','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:ctx,messages:nm.map(m=>({role:m.role,content:m.content}))})});const d=await r.json();setMsgs(m=>[...m,{role:'assistant',content:d.content?.[0]?.text||'Error.'}]);}
     catch(e){setMsgs(m=>[...m,{role:'assistant',content:'Error: '+e.message}]);}
     setLoading(false);
   };
@@ -1016,7 +1174,7 @@ function QueryModule({ctx}){
 }
 
 function SettingsPanel({keys,onSave,onClose,apiStatus}){
-  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||''});
+  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||'',claude_key:keys.claude_key||''});
   const [saved,setSaved]=useState(false);
   const save=()=>{
     localStorage.setItem('aos_fred',vals.fred);localStorage.setItem('aos_eia',vals.eia);
@@ -1025,8 +1183,9 @@ function SettingsPanel({keys,onSave,onClose,apiStatus}){
     localStorage.setItem('aos_ams',vals.ams);
     onSave(vals);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},1500);
   };
-  const free=[{id:'cftc',name:'CFTC COT',url:'publicreporting.cftc.gov',desc:'52-week spec positioning. Fully public.'},{id:'noaa',name:'NOAA Weather',url:'api.weather.gov',desc:'Live US weather alerts. Fully public.'},{id:'gdelt',name:'GDELT Geopolitical',url:'api.gdeltproject.org',desc:'Commodity headlines + regional risk. Fully public.'},{id:'treasury',name:'US Treasury Yields',url:'home.treasury.gov',desc:'Daily yield curve. Fully public.'},{id:'claude',name:'Claude (AlphaQuery)',url:'api.anthropic.com',desc:'AI brief + AlphaQuery + CB hawkishness. Platform key.'}];
+  const free=[{id:'cftc',name:'CFTC COT',url:'publicreporting.cftc.gov',desc:'52-week spec positioning. Fully public.'},{id:'noaa',name:'NOAA Weather',url:'api.weather.gov',desc:'Live US weather alerts. Fully public.'},{id:'gdelt',name:'GDELT Geopolitical',url:'api.gdeltproject.org',desc:'Commodity headlines + regional risk. Fully public.'},{id:'treasury',name:'US Treasury Yields',url:'home.treasury.gov',desc:'Daily yield curve. Fully public.'},{id:'claude_key',name:'Claude API Key',url:'console.anthropic.com/settings/keys',desc:'Required for AlphaQuery, AI Brief + CB hawkishness. Free tier available.',k:'claude_key'}];
   const keyed=[
+    {id:'claude_key',name:'Claude API Key',desc:'For AlphaQuery + AI Brief + CB NLP scoring. Get free key at console.anthropic.com',link:'https://console.anthropic.com/settings/keys',k:'claude_key'},
     {id:'fred',name:'FRED Macro',desc:'Fed Funds, CPI, unemployment, spreads.',link:'https://fred.stlouisfed.org/docs/api/fred/',k:'fred'},
     {id:'eia',name:'EIA Energy',desc:'US crude + gas storage weekly.',link:'https://www.eia.gov/opendata/register.php',k:'eia'},
     {id:'usda',name:'USDA NASS',desc:'Crop progress, conditions, export sales.',link:'https://quickstats.nass.usda.gov/api/',k:'usda'},
@@ -1073,26 +1232,55 @@ function SettingsPanel({keys,onSave,onClose,apiStatus}){
 /* =====================================================================
    DETAIL PANEL — drill-down for any live data item
    ===================================================================== */
-function LineChart({data=[],color=C.accent,w=340,h=80,labels=[],fmt2=v=>v!=null?parseFloat(v).toFixed(2):''}){
+function LineChart({data=[],color=C.accent,w=340,h=80,labels=[],title='',unit='',yFmt=null}){
+  const CE=React.createElement;
   const vals=data.map(Number).filter(v=>!isNaN(v));
-  if(vals.length<2)return React.createElement('div',{style:{height:h,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:7}},'INSUFFICIENT DATA');
+  if(vals.length<2)return CE('div',{style:{height:h,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:7}},'INSUFFICIENT DATA');
   const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
-  const pts=vals.map((v,i)=>`${(i/(vals.length-1))*w},${h-8-((v-mn)/rng)*(h-16)}`).join(' ');
+  const PAD={l:labels.length?36:8,r:8,t:title?16:4,b:labels.length?18:8};
+  const plotW=w-PAD.l-PAD.r,plotH=h-PAD.t-PAD.b;
+  const xP=i=>PAD.l+(i/(vals.length-1))*plotW;
+  const yP=v=>PAD.t+plotH-((v-mn)/rng)*plotH;
+  const pts=vals.map((v,i)=>`${xP(i)},${yP(v)}`).join(' ');
   const last=vals[vals.length-1],prev=vals[vals.length-2];
-  const lineColor=last>=prev?C.green:C.red;
-  return React.createElement('div',{style:{position:'relative'}},
-    React.createElement('svg',{width:w,height:h,style:{display:'block'}},
-      React.createElement('defs',null,React.createElement('linearGradient',{id:'lg',x1:'0',y1:'0',x2:'0',y2:'1'},React.createElement('stop',{offset:'0%',stopColor:lineColor,stopOpacity:0.15}),React.createElement('stop',{offset:'100%',stopColor:lineColor,stopOpacity:0}))),
-      React.createElement('polygon',{points:pts+` ${w},${h} 0,${h}`,fill:'url(#lg)'}),
-      React.createElement('polyline',{points:pts,fill:'none',stroke:lineColor,strokeWidth:1.5,strokeLinejoin:'round'}),
-      React.createElement('circle',{cx:(vals.length-1)/(vals.length-1)*w,cy:h-8-((last-mn)/rng)*(h-16),r:3,fill:lineColor})
-    ),
-    labels.length>0&&React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:3}},
-      React.createElement('span',{style:{fontSize:6,color:C.muted}},labels[0]),
-      React.createElement('span',{style:{fontSize:6,color:C.muted}},labels[labels.length-1])
-    )
+  const lc=last>=prev?C.green:C.red;
+  const fmt=yFmt||(v=>Math.abs(v)>=1000?Math.round(v/1000)+'K':v.toFixed(1));
+  const yTicks=3;
+  // Show every Nth label to avoid crowding
+  const lStep=Math.max(1,Math.ceil(labels.length/5));
+  return CE('svg',{width:w,height:h,style:{display:'block',overflow:'visible'}},
+    CE('defs',null,CE('linearGradient',{id:'lcg'+w+h,x1:'0',y1:'0',x2:'0',y2:'1'},
+      CE('stop',{offset:'0%',stopColor:lc,stopOpacity:0.15}),
+      CE('stop',{offset:'100%',stopColor:lc,stopOpacity:0}))),
+    // Title
+    title&&CE('text',{x:PAD.l,y:10,fontSize:6,fill:C.muted,fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px'},title),
+    // Y grid lines + labels
+    ...Array.from({length:yTicks+1},(_,i)=>{
+      const v=mn+(rng/yTicks)*i;
+      const y=yP(v);
+      return CE('g',{key:'yg'+i},
+        CE('line',{x1:PAD.l,y1:y,x2:w-PAD.r,y2:y,stroke:C.border,strokeWidth:0.5,strokeDasharray:'2,3'}),
+        CE('text',{x:PAD.l-3,y:y+3,textAnchor:'end',fontSize:6,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},fmt(v))
+      );
+    }),
+    // X labels (every Nth)
+    ...labels.filter((_,i)=>i===0||i===labels.length-1||i%lStep===0).map((lb,_,arr)=>{
+      const i=labels.indexOf(lb);
+      return CE('text',{key:'xl'+i,x:xP(i),y:h-2,textAnchor:i===0?'start':i===labels.length-1?'end':'middle',fontSize:6,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},lb);
+    }),
+    // Area fill
+    CE('polygon',{points:pts+` ${xP(vals.length-1)},${h-PAD.b} ${xP(0)},${h-PAD.b}`,fill:`url(#lcg${w}${h})`}),
+    // Line
+    CE('polyline',{points:pts,fill:'none',stroke:lc,strokeWidth:1.5,strokeLinejoin:'round'}),
+    // Data points for small datasets
+    vals.length<=12&&vals.map((v,i)=>CE('circle',{key:i,cx:xP(i),cy:yP(v),r:2.5,fill:lc})),
+    // Last value dot
+    CE('circle',{cx:xP(vals.length-1),cy:yP(last),r:3.5,fill:lc}),
+    // Current value label
+    CE('text',{x:xP(vals.length-1)+5,y:yP(last)+3,fontSize:7,fill:lc,fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},fmt(last)+(unit?' '+unit:''))
   );
 }
+
 function BarChart({data=[],color=C.accent,w=340,h=60}){
   const vals=data.map(Number).filter(v=>!isNaN(v));
   if(!vals.length)return null;
@@ -1128,58 +1316,150 @@ function DetailPanel({detail,onClose,yields}){
   let content=null;
 
   if(type==='cot'){
-    const netHist=(data.history||[]).map(r=>r.net);
-    const lngHist=(data.history||[]).map(r=>r.lng);
-    const shtHist=(data.history||[]).map(r=>r.sht);
+    const hist=(data.history||[]);
+    const netHist=hist.map(r=>r.net);
+    const lngHist=hist.map(r=>r.lng);
+    const shtHist=hist.map(r=>r.sht);
+    const dateLabels=hist.map(r=>{
+      const d=new Date(r.date||'');
+      return isNaN(d)?String(r.date||'').slice(5,10):(d.getMonth()+1)+'/'+(d.getDate());
+    });
     const col=data.pct>70?C.red:data.pct>40?C.gold:C.green;
-    content=React.createElement('div',null,
-      header(data.label+' — COT POSITIONING','CFTC · publicreporting.cftc.gov'),
-      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
-        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
-          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'52W PERCENTILE'),
-          React.createElement('div',{style:{fontSize:28,fontWeight:700,color:col}},data.pct+'%')
-        ),
-        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
-          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'NET SPEC POSITION'),
-          React.createElement('div',{style:{fontSize:20,fontWeight:700,color:data.net>0?C.green:C.red}},(data.net>0?'+':'')+Math.round(data.net/1000)+'K')
-        )
-      ),
-      netHist.length>1&&React.createElement('div',{style:{marginBottom:12}},
-        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'26-WEEK NET POSITION HISTORY'),
-        React.createElement(LineChart,{data:netHist,color:data.net>0?C.green:C.red,w:340,h:80})
-      ),
-      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,marginBottom:12}},
-        [{l:'LONGS',v:Math.round(data.lng/1000)+'K',c:C.green},{l:'SHORTS',v:Math.round(data.sht/1000)+'K',c:C.red},{l:'OPEN INT',v:data.oi?Math.round(data.oi/1000)+'K':'—',c:C.hi},{l:'WoW CHG',v:(data.chg>0?'+':'')+Math.round(data.chg/1000)+'K',c:data.chg>0?C.green:C.red}].map(s=>
-          React.createElement('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
-            React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}}),s.l,
-            React.createElement('div',{style:{fontSize:11,fontWeight:600,color:s.c}}),s.v
+    const CE=React.createElement;
+    const K=v=>Math.round((v||0)/1000)+'K';
+    content=CE('div',null,
+      header(data.label+' — COT POSITIONING','CFTC · publicreporting.cftc.gov · Non-Commercial Speculators'),
+      // KPI row
+      CE('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:12}},
+        [{l:'52W %ILE',v:data.pct+'th',c:col},{l:'NET',v:(data.net>0?'+':'')+K(data.net),c:data.net>0?C.green:C.red},{l:'LONGS',v:K(data.lng),c:C.green},{l:'SHORTS',v:K(data.sht),c:C.red},{l:'OI',v:data.oi?K(data.oi):'—',c:C.hi}].map(s=>
+          CE('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:'7px 6px',textAlign:'center'}},
+            CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},s.l),
+            CE('div',{style:{fontSize:13,fontWeight:700,color:s.c}},s.v)
           )
         )
       ),
-      React.createElement('div',{style:{fontSize:6,color:C.muted}},'Report date: '+data.date+' · '+data.weeks+'w history · 52w range: '+Math.round(data.min52/1000)+'K to '+Math.round(data.max52/1000)+'K')
+      // Net position history with full axes + dates
+      netHist.length>1&&CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'10px 6px',marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'NET SPEC POSITION — '+hist.length+'-WEEK HISTORY'),
+        CE(LineChart,{data:netHist,color:data.net>0?C.green:C.red,w:330,h:100,labels:dateLabels,title:'',unit:'contracts',yFmt:v=>Math.round(v/1000)+'K'}),
+        CE('div',{style:{display:'flex',justifyContent:'space-between',marginTop:4}},
+          CE('span',{style:{fontSize:6,color:C.muted}},'52w Min: '+K(data.min52)),
+          CE('span',{style:{fontSize:6,color:C.muted}},'Current: '+(data.net>0?'+':'')+K(data.net)+' ('+data.pct+'th %ile)'),
+          CE('span',{style:{fontSize:6,color:C.muted}},'52w Max: '+K(data.max52))
+        )
+      ),
+      // Long/Short stacked bar
+      CE('div',{style:{marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'LONG / SHORT SPLIT'),
+        CE('div',{style:{display:'flex',height:14,borderRadius:1,overflow:'hidden'}},
+          CE('div',{style:{width:data.lng/(data.lng+data.sht)*100+'%',background:C.green,opacity:0.8,display:'flex',alignItems:'center',justifyContent:'center'}}),
+          CE('div',{style:{flex:1,background:C.red,opacity:0.8}})
+        ),
+        CE('div',{style:{display:'flex',justifyContent:'space-between',marginTop:3}},
+          CE('span',{style:{fontSize:7,color:C.green}},'▮ LONGS '+K(data.lng)+' ('+Math.round(data.lng/(data.lng+data.sht)*100)+'%)'),
+          CE('span',{style:{fontSize:7,color:C.red}},'SHORTS '+K(data.sht)+' ('+Math.round(data.sht/(data.lng+data.sht)*100)+'%) ▮')
+        )
+      ),
+      // Longs history
+      lngHist.length>1&&CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'10px 6px',marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'GROSS LONGS & SHORTS HISTORY'),
+        CE('div',{style:{position:'relative',height:80}},
+          CE('svg',{width:330,height:80,style:{display:'block'}},
+            lngHist.length>1&&(()=>{
+              const allV=[...lngHist,...shtHist].filter(v=>!isNaN(v));
+              const mn=Math.min(...allV)*0.9,mx=Math.max(...allV)*1.1,rng=mx-mn||1;
+              const xP=i=>4+(i/(lngHist.length-1))*322;
+              const yP=v=>2+76-((v-mn)/rng)*76;
+              const lPts=lngHist.map((v,i)=>`${xP(i)},${yP(v)}`).join(' ');
+              const sPts=shtHist.map((v,i)=>`${xP(i)},${yP(v)}`).join(' ');
+              return React.createElement('g',null,
+                React.createElement('polyline',{points:lPts,fill:'none',stroke:C.green,strokeWidth:1.5,strokeLinejoin:'round'}),
+                React.createElement('polyline',{points:sPts,fill:'none',stroke:C.red,strokeWidth:1.5,strokeLinejoin:'round'})
+              );
+            })()
+          ),
+          CE('div',{style:{display:'flex',gap:12,fontSize:6,color:C.muted,justifyContent:'center',marginTop:2}},
+            CE('span',{style:{color:C.green}},'── LONGS'),
+            CE('span',{style:{color:C.red}},'── SHORTS')
+          )
+        )
+      ),
+      // Report metadata
+      CE('div',{style:{fontSize:6,color:C.muted,lineHeight:1.8,marginTop:6}},
+        'Report date: '+String(data.date||'').slice(0,10),
+        CE('br'),
+        'WoW change: '+(data.chg>0?'+':'')+K(data.chg)+' net contracts',
+        CE('br'),
+        '52-week range: '+K(data.min52)+' to '+K(data.max52)+' net',
+        CE('br'),
+        'Source: CFTC Commitments of Traders · publicreporting.cftc.gov · Lag: ~3-5 business days'
+      )
     );
   }
 
   if(type==='fred'){
     const chg=data.value-data.prev;
     const col=up(chg);
-    content=React.createElement('div',null,
-      header(data.label+' — FRED MACRO','St. Louis Fed · api.stlouisfed.org'),
-      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
-        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
-          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'LATEST VALUE'),
-          React.createElement('div',{style:{fontSize:24,fontWeight:700,color:C.hi}},fmt(data.value,2)+'%')
+    const CE=React.createElement;
+    const hist=data.hist||[];
+    const isRate=['Fed Funds','2Y Yield','10Y Yield','2s10s Spread','10Y Breakeven','HY Spread'].includes(data.label);
+    const isUnemployment=data.label==='Unemployment';
+    // Interpretation
+    const interp=()=>{
+      if(data.label==='Fed Funds')return data.value>4?'Restrictive territory — above neutral rate estimate (~2.5-3%)':'Near neutral — policy stance shifting';
+      if(data.label==='CPI YoY')return data.value>3?'⚠ Above Fed target — inflation pressure':'Near/below 2% target — inflation contained';
+      if(data.label==='Unemployment')return data.value>5?'Loosening labor market':'Tight labor market — wage pressure possible';
+      if(data.label==='2s10s Spread')return data.value<0?'⚠ INVERTED — historical recession indicator ('+Math.round(data.value*100)+'bp)':'+'+Math.round(data.value*100)+'bp — Normal yield curve';
+      if(data.label==='HY Spread')return data.value>5?'⚠ WIDE — credit stress, risk-off':data.value>3.5?'Moderate spread — watch for widening':'Tight — risk appetite healthy';
+      if(data.label==='10Y Breakeven')return data.value>2.5?'Inflation expectations elevated':data.value<1.8?'Deflation risk priced in':'Inflation expectations anchored near Fed target';
+      return '';
+    };
+    content=CE('div',null,
+      header(data.label+' — FRED MACRO','St. Louis Fed · api.stlouisfed.org · '+data.date),
+      // KPI row
+      CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:12}},
+        CE('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'LATEST'),
+          CE('div',{style:{fontSize:26,fontWeight:700,color:C.hi}},data.value!=null?data.value.toFixed(2)+'%':'—')
         ),
-        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
-          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'PERIOD CHANGE'),
-          React.createElement('div',{style:{fontSize:20,fontWeight:700,color:col}},(chg>0?'+':'')+fmt(chg,2)+'%')
+        CE('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'PERIOD CHG'),
+          CE('div',{style:{fontSize:20,fontWeight:700,color:col}},(chg>0?'+':'')+chg.toFixed(2)+'%')
+        ),
+        CE('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'SERIES'),
+          CE('div',{style:{fontSize:9,color:C.muted,lineHeight:1.4}},data.id)
         )
       ),
-      (data.hist||[]).length>1&&React.createElement('div',{style:{marginBottom:12}},
-        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'8-PERIOD HISTORY'),
-        React.createElement(LineChart,{data:data.hist,color:chg>=0?C.green:C.red,w:340,h:80})
+      // History chart with labels
+      hist.length>1&&CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'10px 6px',marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},data.label.toUpperCase()+' — '+(hist.length)+'-PERIOD HISTORY'),
+        CE(LineChart,{data:hist,color:chg>=0?C.green:C.red,w:330,h:100,labels:hist.map((_,i)=>'P-'+(hist.length-1-i)),title:'',unit:'%',yFmt:v=>v.toFixed(2)+'%'})
       ),
-      React.createElement('div',{style:{fontSize:6,color:C.muted}},'As of: '+data.date+' · Series: '+data.id)
+      // 52w range bar
+      hist.length>1&&CE('div',{style:{marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:4}},hist.length+'-PERIOD RANGE'),
+        CE('div',{style:{position:'relative',height:6,background:C.track,borderRadius:3}},
+          CE('div',{style:{
+            position:'absolute',
+            left:(data.value-Math.min(...hist))/((Math.max(...hist)-Math.min(...hist))||1)*100+'%',
+            top:-2,width:10,height:10,borderRadius:'50%',background:col,transform:'translateX(-50%)'
+          }})
+        ),
+        CE('div',{style:{display:'flex',justifyContent:'space-between',marginTop:4}},
+          CE('span',{style:{fontSize:6,color:C.muted}},Math.min(...hist).toFixed(2)+'%'),
+          CE('span',{style:{fontSize:6,color:col,fontWeight:600}},'Current: '+data.value.toFixed(2)+'%'),
+          CE('span',{style:{fontSize:6,color:C.muted}},Math.max(...hist).toFixed(2)+'%')
+        )
+      ),
+      // Interpretation
+      interp()&&CE('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10,marginBottom:10}},
+        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'MARKET INTERPRETATION'),
+        CE('div',{style:{fontSize:8,color:C.hi,lineHeight:1.6}},interp())
+      ),
+      CE('div',{style:{fontSize:6,color:C.muted}},
+        'Data: FRED · St. Louis Federal Reserve · Series: '+data.id+' · As of: '+data.date
+      )
     );
   }
 
@@ -1346,12 +1626,356 @@ function DetailPanel({detail,onClose,yields}){
 /* =====================================================================
    MAIN APP
    ===================================================================== */
+/* ═══════════════════════════════════════════════════════
+   PSD WORKBENCH — Interactive S&D Analysis Tool
+   ═══════════════════════════════════════════════════════ */
+const PSD_COUNTRIES={
+  'WORLD (Sum)':'ALL','US':'US','China':'CH','Brazil':'BR','EU':'E4',
+  'Argentina':'AR','Australia':'AS','Canada':'CA','India':'IB','Ukraine':'UP',
+  'Russia':'RS','Mexico':'MX','Thailand':'TH','Vietnam':'VM','Indonesia':'ID',
+  'Malaysia':'MY','Pakistan':'PK','Bangladesh':'BG'
+};
+const PSD_ATTR_MAP={
+  20:{n:'Beg. Stocks',short:'BEG'},
+  28:{n:'Production',short:'PROD'},
+  57:{n:'Imports',short:'IMP'},
+  86:{n:'Total Supply',short:'TSUP'},
+  88:{n:'Exports',short:'EXP'},
+  125:{n:'Dom. Consumption',short:'DOM'},
+  176:{n:'Ending Stocks',short:'ESTK'},
+  195:{n:'Stocks/Use %',short:'S/U%',derived:true}
+};
+const PSD_CROP_YEARS=[2018,2019,2020,2021,2022,2023,2024,2025];
+const PSD_COUNTRY_NAMES=Object.fromEntries(Object.entries(PSD_COUNTRIES).map(([k,v])=>[v,k]));
+
+function PSDWorkbench({psd,psdKey,fetchPSDYear,fetchPSDHistory}){
+  const CE=React.createElement;
+  const [selectedCrops,setSelectedCrops]=useState(['CORN','SOYBEANS','WHEAT']);
+  const [selectedAttrs,setSelectedAttrs]=useState([28,176,88,125,195]);
+  const [selectedYears,setSelectedYears]=useState([2022,2023,2024,2025]);
+  const [selectedCountry,setSelectedCountry]=useState('ALL');
+  const [viewMode,setViewMode]=useState('table'); // table | chart
+  const [chartAttr,setChartAttr]=useState(195); // which attr to chart
+  const [chartType,setChartType]=useState('line'); // line | bar
+  const [tableData,setTableData]=useState({});
+  const [loading,setLoading]=useState({});
+  const [colMode,setColMode]=useState('years'); // years | crops | countries
+
+  const fmt3=v=>v!=null&&!isNaN(v)?parseFloat(v).toFixed(3):'—';
+  const fmtVal=(v,attrId,div)=>{
+    if(v==null||isNaN(v))return '—';
+    if(attrId===195)return parseFloat(v).toFixed(1)+'%';
+    // Values in API are 1000 MT or 1000 Bales — show raw with 3 decimals as requested
+    return parseFloat(v).toFixed(3);
+  };
+
+  const cropMeta=React.useMemo(()=>{
+    const m={};
+    Object.entries(PSD_CROPS).forEach(([k,v])=>{ m[k]=v; });
+    return m;
+  },[]);
+
+  // Fetch data for selected crops/years/country
+  const fetchData=React.useCallback(async()=>{
+    if(!psdKey)return;
+    const needed=[];
+    selectedCrops.forEach(crop=>{
+      selectedYears.forEach(year=>{
+        const key=`${crop}_${year}`;
+        if(!tableData[key])needed.push({crop,year,key});
+      });
+    });
+    if(!needed.length)return;
+    setLoading(prev=>{
+      const n={...prev};
+      needed.forEach(({key})=>{n[key]=true;});
+      return n;
+    });
+    for(const {crop,year,key} of needed){
+      try{
+        const d=await fetchPSDYear(psdKey,crop,year);
+        setTableData(prev=>({...prev,[key]:d||null}));
+      }catch(e){}
+      setLoading(prev=>{const n={...prev};delete n[key];return n;});
+    }
+  },[psdKey,selectedCrops,selectedYears,tableData,fetchPSDYear]);
+
+  useEffect(()=>{fetchData();},[selectedCrops,selectedYears]);
+
+  // Extract value for a given crop/year/attr/country
+  const getValue=(crop,year,attrId,countryCode)=>{
+    const d=tableData[`${crop}_${year}`];
+    if(!d)return null;
+    if(attrId===195){
+      // Derived: EndStk / DomCons * 100
+      const endStk=getValue(crop,year,176,countryCode);
+      const domCons=getValue(crop,year,125,countryCode);
+      return endStk!=null&&domCons!=null&&domCons>0?(endStk/domCons)*100:null;
+    }
+    if(countryCode==='ALL'){
+      // Sum all countries
+      return d.world?.[{20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'}[attrId]]??null;
+    }
+    if(countryCode==='US') return d.us?.[{20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'}[attrId]]??null;
+    return null; // Other countries need raw row data — future enhancement
+  };
+
+  const toggleCrop=c=>setSelectedCrops(p=>p.includes(c)?p.filter(x=>x!==c):[...p,c]);
+  const toggleAttr=a=>setSelectedAttrs(p=>p.includes(a)?p.filter(x=>x!==a):[...p,a]);
+  const toggleYear=y=>setSelectedYears(p=>p.includes(y)?p.filter(x=>x!==y).sort((a,b)=>a-b):[...p,y].sort((a,b)=>a-b));
+
+  const suColor=v=>v==null?C.muted:v<10?C.red:v<15?C.red:v<20?C.gold:C.green;
+  const changeColor=(curr,prev)=>curr==null||prev==null?C.muted:curr>prev?C.green:curr<prev?C.red:C.muted;
+
+  // Build chart data
+  const chartData=React.useMemo(()=>{
+    return selectedCrops.map(crop=>{
+      const vals=selectedYears.map(year=>getValue(crop,year,chartAttr,selectedCountry));
+      return{crop,vals,color:{CORN:C.gold,SOYBEANS:C.green,WHEAT:C.accent,COTTON:C.rose,COFFEE:'#8b4513',SUGAR:'#c0c0c0',COCOA:'#5c4033','PALM OIL':'#ff8c00'}[crop]||C.accent};
+    });
+  },[tableData,selectedCrops,selectedYears,chartAttr,selectedCountry]);
+
+  const hasData=selectedCrops.some(c=>selectedYears.some(y=>tableData[`${c}_${y}`]));
+  const isLoading=Object.keys(loading).length>0;
+
+  // SVG Line Chart
+  const renderChart=()=>{
+    const W=800,H=280,PAD={l:70,r:20,t:30,b:50};
+    const plotW=W-PAD.l-PAD.r,plotH=H-PAD.t-PAD.b;
+    const allVals=chartData.flatMap(d=>d.vals).filter(v=>v!=null);
+    if(!allVals.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data to chart');
+    const mn=Math.min(...allVals)*0.95,mx=Math.max(...allVals)*1.05,rng=mx-mn||1;
+    const xStep=plotW/(selectedYears.length-1||1);
+    const yPos=v=>PAD.t+plotH-(v-mn)/rng*plotH;
+    const xPos=i=>PAD.l+i*xStep;
+    const yTicks=5;
+    const isPC=chartAttr===195;
+
+    return CE('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',overflow:'visible'}},
+      // Grid
+      Array.from({length:yTicks+1},(_,i)=>{
+        const v=mn+(rng/yTicks)*i;
+        const y=yPos(v);
+        return CE('g',{key:'g'+i},
+          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:1,strokeDasharray:'3,3'}),
+          CE('text',{x:PAD.l-6,y:y+3,textAnchor:'end',fontSize:8,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},
+            isPC?v.toFixed(1)+'%':v.toFixed(0))
+        );
+      }),
+      // X axis labels
+      selectedYears.map((yr,i)=>
+        CE('text',{key:'x'+i,x:xPos(i),y:H-PAD.b+16,textAnchor:'middle',fontSize:8,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},'MY'+yr)
+      ),
+      // X axis line
+      CE('line',{x1:PAD.l,y1:H-PAD.b,x2:W-PAD.r,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
+      // Y axis line
+      CE('line',{x1:PAD.l,y1:PAD.t,x2:PAD.l,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
+      // Y axis label
+      CE('text',{x:12,y:H/2,textAnchor:'middle',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace',transform:`rotate(-90,12,${H/2})`},
+        isPC?'Stocks/Use %':(PSD_CROPS[selectedCrops[0]]?.unit||'1000 MT')),
+      // Data series
+      chartData.map(({crop,vals,color})=>{
+        const pts=vals.map((v,i)=>v!=null?[xPos(i),yPos(v)]:null).filter(Boolean);
+        if(pts.length<1)return null;
+        if(chartType==='line'){
+          const validSegs=[];
+          let seg=[];
+          vals.forEach((v,i)=>{
+            if(v!=null)seg.push([xPos(i),yPos(v)]);
+            else if(seg.length){validSegs.push(seg);seg=[];}
+          });
+          if(seg.length)validSegs.push(seg);
+          return CE('g',{key:crop},
+            validSegs.map((s,si)=>
+              CE('polyline',{key:si,points:s.map(p=>p.join(',')).join(' '),fill:'none',stroke:color,strokeWidth:2,strokeLinejoin:'round'})
+            ),
+            pts.map((p,pi)=>CE('circle',{key:pi,cx:p[0],cy:p[1],r:3,fill:color})),
+            pts.map((p,pi)=>{
+              const v=vals.filter(v=>v!=null)[pi];
+              return CE('text',{key:'l'+pi,x:p[0],y:p[1]-7,textAnchor:'middle',fontSize:7,fill:color,fontFamily:'IBM Plex Mono,monospace'},
+                isPC?v.toFixed(1)+'%':v.toFixed(0));
+            })
+          );
+        }
+        // Bar chart
+        const bw=Math.min(30,xStep*0.7/selectedCrops.length);
+        const offset=(selectedCrops.indexOf(crop)-selectedCrops.length/2+0.5)*bw;
+        return CE('g',{key:crop},
+          vals.map((v,i)=>{
+            if(v==null)return null;
+            const bh=(v-mn)/rng*plotH;
+            const x=xPos(i)+offset-bw/2;
+            const y=yPos(v);
+            return CE('g',{key:i},
+              CE('rect',{x,y,width:bw,height:bh,fill:color,opacity:0.8}),
+              CE('text',{x:x+bw/2,y:y-3,textAnchor:'middle',fontSize:6,fill:color,fontFamily:'IBM Plex Mono,monospace'},isPC?v.toFixed(1)+'%':v.toFixed(0))
+            );
+          })
+        );
+      }),
+      // Legend
+      chartData.map(({crop,color},i)=>
+        CE('g',{key:'leg'+i,transform:`translate(${PAD.l+i*90},${H-12})`},
+          CE('rect',{x:0,y:-5,width:8,height:8,fill:color}),
+          CE('text',{x:11,y:2,fontSize:7,fill:C.text,fontFamily:'IBM Plex Mono,monospace'},crop)
+        )
+      )
+    );
+  };
+
+  return CE('div',{style:{padding:14,overflowY:'auto',flex:1,fontFamily:'IBM Plex Mono,monospace'}},
+    // Header
+    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,borderBottom:'1px solid '+C.border,paddingBottom:10}},
+      CE('div',null,
+        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:psd?.status==='live'?C.green:C.gold}},'USDA PSD WORKBENCH'+(isLoading?' · LOADING…':'')),
+        CE('div',{style:{fontSize:6,color:C.muted,marginTop:3}},'Production, Supply & Distribution · api.fas.usda.gov · All values in native API unit (1000 MT or 1000 Bales) · 3 decimal precision')
+      ),
+      CE('div',{style:{display:'flex',gap:6}},
+        ['table','chart'].map(v=>CE('button',{key:v,onClick:()=>setViewMode(v),style:{fontSize:7,padding:'4px 12px',cursor:'pointer',background:v===viewMode?C.accent+'20':'transparent',border:'1px solid '+(v===viewMode?C.accent:C.border),color:v===viewMode?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px'}},v==='table'?'TABLE':'CHART'))
+      )
+    ),
+
+    // Controls row
+    CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12,marginBottom:12}},
+
+      // Crops selector
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'CROPS'),
+        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},
+          Object.keys(PSD_CROPS).map(c=>CE('button',{key:c,onClick:()=>toggleCrop(c),style:{fontSize:7,padding:'2px 8px',cursor:'pointer',background:selectedCrops.includes(c)?C.gold+'25':'transparent',border:'1px solid '+(selectedCrops.includes(c)?C.gold:C.border),color:selectedCrops.includes(c)?C.gold:C.muted,fontFamily:'IBM Plex Mono,monospace'}},c))
+        )
+      ),
+
+      // Attributes selector
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'ATTRIBUTES'),
+        CE('div',{style:{display:'flex',flexDirection:'column',gap:3}},
+          Object.entries(PSD_ATTR_MAP).map(([id,{n,short}])=>CE('label',{key:id,style:{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
+            CE('input',{type:'checkbox',checked:selectedAttrs.includes(parseInt(id)),onChange:()=>toggleAttr(parseInt(id)),style:{accentColor:C.accent,cursor:'pointer'}}),
+            CE('span',{style:{fontSize:7,color:selectedAttrs.includes(parseInt(id))?C.hi:C.muted}},n)
+          ))
+        )
+      ),
+
+      // Year range selector
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'MARKET YEARS'),
+        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},
+          PSD_CROP_YEARS.map(y=>CE('button',{key:y,onClick:()=>toggleYear(y),style:{fontSize:7,padding:'2px 8px',cursor:'pointer',background:selectedYears.includes(y)?C.accent+'25':'transparent',border:'1px solid '+(selectedYears.includes(y)?C.accent:C.border),color:selectedYears.includes(y)?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace'}},y))
+        )
+      ),
+
+      // Country + chart controls
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'GEOGRAPHY'),
+        CE('select',{value:selectedCountry,onChange:e=>setSelectedCountry(e.target.value),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace',width:'100%',marginBottom:8}},
+          Object.entries(PSD_COUNTRIES).map(([label,code])=>CE('option',{key:code,value:code},label))
+        ),
+        viewMode==='chart'&&CE('div',null,
+          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:4}},'CHART ATTRIBUTE'),
+          CE('select',{value:chartAttr,onChange:e=>setChartAttr(parseInt(e.target.value)),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace',width:'100%',marginBottom:6}},
+            Object.entries(PSD_ATTR_MAP).map(([id,{n}])=>CE('option',{key:id,value:id},n))
+          ),
+          CE('div',{style:{display:'flex',gap:4}},
+            ['line','bar'].map(t=>CE('button',{key:t,onClick:()=>setChartType(t),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',flex:1,background:t===chartType?C.accent+'20':'transparent',border:'1px solid '+(t===chartType?C.accent:C.border),color:t===chartType?C.accent:C.muted,fontFamily:'IBM Plex Mono,monospace'}},t.toUpperCase()))
+          )
+        )
+      )
+    ),
+
+    // No key state
+    !psdKey&&CE('div',{style:{padding:24,textAlign:'center',border:'1px solid '+C.border,background:C.s1,marginBottom:12}},
+      CE('div',{style:{fontSize:8,color:C.gold,marginBottom:6}},'USDA PSD KEY REQUIRED'),
+      CE('div',{style:{fontSize:7,color:C.muted}},'Add your free PSD API key in ⚙ Settings → USDA PSD'),
+      CE('a',{href:'https://apps.fas.usda.gov/opendataweb/',target:'_blank',style:{fontSize:7,color:C.accent,marginTop:4,display:'block'}},'→ Register free at apps.fas.usda.gov/opendataweb')
+    ),
+
+    // TABLE VIEW
+    viewMode==='table'&&CE('div',{style:{overflowX:'auto'}},
+      CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+        CE('thead',null,
+          CE('tr',null,
+            CE('th',{style:{padding:'6px 8px',textAlign:'left',borderBottom:'2px solid '+C.accent,fontSize:6,letterSpacing:'1px',color:C.muted,background:C.s1,position:'sticky',left:0,zIndex:2,minWidth:140}},'CROP · ATTRIBUTE'),
+            selectedCrops.length>0&&selectedYears.map(yr=>
+              CE('th',{key:yr,style:{padding:'6px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:7,color:C.accent,background:C.s1,fontWeight:600,minWidth:90}},'MY'+yr)
+            ),
+            // YoY change columns
+            selectedYears.length>1&&CE('th',{style:{padding:'6px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6,color:C.muted,background:C.s1,minWidth:70}},'YoY Δ')
+          )
+        ),
+        CE('tbody',null,
+          selectedCrops.flatMap(crop=>[
+            // Crop header row
+            CE('tr',{key:crop+'_hdr',style:{background:C.s2}},
+              CE('td',{colSpan:selectedYears.length+2,style:{padding:'5px 8px',fontSize:7,color:C.gold,letterSpacing:'2px',fontWeight:600,borderBottom:'1px solid '+C.border}},
+                crop+' · '+PSD_CROPS[crop]?.unit+' · '+(selectedCountry==='ALL'?'WORLD':PSD_COUNTRY_NAMES[selectedCountry]||selectedCountry))
+            ),
+            // Attribute rows
+            ...selectedAttrs.map(attrId=>{
+              const {n,short}=PSD_ATTR_MAP[attrId]||{n:String(attrId),short:String(attrId)};
+              const vals=selectedYears.map(yr=>getValue(crop,yr,attrId,selectedCountry));
+              const lastVal=vals[vals.length-1];
+              const prevVal=vals[vals.length-2];
+              const yoy=lastVal!=null&&prevVal!=null?lastVal-prevVal:null;
+              const isKey=attrId===195||attrId===176||attrId===28;
+              const colFn=attrId===195?v=>suColor(v):()=>C.hi;
+              return CE('tr',{key:crop+'_'+attrId,style:{borderBottom:'1px solid '+C.border+'60'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+                CE('td',{style:{padding:'4px 8px',color:isKey?C.hi:C.text,position:'sticky',left:0,background:'inherit',borderRight:'1px solid '+C.border,fontWeight:isKey?600:400}},
+                  CE('span',{style:{fontSize:6,color:C.muted,marginRight:4}},short),n
+                ),
+                vals.map((v,yi)=>CE('td',{key:yi,style:{padding:'4px 10px',textAlign:'right',color:isKey&&attrId!==195?colFn(v):attrId===195?suColor(v):C.text,fontWeight:isKey?600:400,fontVariantNumeric:'tabular-nums'}},
+                  loading[`${crop}_${selectedYears[yi]}`]?CE('div',{style:{animation:'shimmer 1.5s infinite',width:60,height:10,background:C.border}}):fmtVal(v,attrId)
+                )),
+                selectedYears.length>1&&CE('td',{style:{padding:'4px 10px',textAlign:'right',color:yoy==null?C.muted:yoy>0?C.green:C.red,fontVariantNumeric:'tabular-nums'}},
+                  yoy!=null?(yoy>0?'+':'')+yoy.toFixed(3):'—'
+                )
+              );
+            })
+          ])
+        )
+      )
+    ),
+
+    // CHART VIEW
+    viewMode==='chart'&&CE('div',null,
+      CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'12px 8px',marginBottom:8}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:8}},
+          (PSD_ATTR_MAP[chartAttr]?.n||'').toUpperCase()+' · '+(selectedCountry==='ALL'?'WORLD':PSD_COUNTRY_NAMES[selectedCountry]||selectedCountry)+' · '+(PSD_CROPS[selectedCrops[0]]?.unit||'1000 MT')
+        ),
+        renderChart()
+      ),
+      // Data table below chart
+      CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'UNDERLYING DATA ('+PSD_ATTR_MAP[chartAttr]?.n+')'),
+      CE('div',{style:{overflowX:'auto'}},
+        CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+          CE('thead',null,CE('tr',null,
+            CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'CROP'),
+            selectedYears.map(yr=>CE('th',{key:yr,style:{padding:'4px 10px',textAlign:'right',borderBottom:'1px solid '+C.border,color:C.accent,fontSize:7}},'MY'+yr))
+          )),
+          CE('tbody',null,
+            chartData.map(({crop,vals,color})=>CE('tr',{key:crop,style:{borderBottom:'1px solid '+C.border+'40'}},
+              CE('td',{style:{padding:'4px 8px',color:color,fontWeight:600}},crop),
+              vals.map((v,i)=>CE('td',{key:i,style:{padding:'4px 10px',textAlign:'right',color:chartAttr===195?suColor(v):C.hi,fontVariantNumeric:'tabular-nums'}},fmtVal(v,chartAttr)))
+            ))
+          )
+        )
+      )
+    ),
+
+    // Source note
+    CE('div',{style:{marginTop:12,fontSize:6,color:C.muted,borderTop:'1px solid '+C.border,paddingTop:8,lineHeight:1.8}},
+      'Source: USDA FAS Production, Supply & Distribution (PSD) Online Database · api.fas.usda.gov · Monthly updates · Units per crop: Corn/Soy/Wheat/Sugar/Cocoa/Palm Oil = 1,000 Metric Tons · Cotton = 1,000 480-lb Bales · Coffee = 1,000 60-kg Bags · Stocks/Use = Ending Stocks ÷ Dom. Consumption × 100'
+    )
+  );
+}
+
+
 function AlphaOS(){
   const [mod,setMod]=useState('BRIEFING');
   const [showSettings,setShowSettings]=useState(false);
   const [showAlerts,setShowAlerts]=useState(false);
   const [detail,setDetail]=useState(null);
-  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||''}));
+  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||'',claude_key:localStorage.getItem('aos_claude_key')||''}));
   const [prices,setPrices]=useState(null);
   const [yields,setYields]=useState(null);
   const [cot,setCot]=useState([]);
@@ -1380,7 +2004,7 @@ function AlphaOS(){
       const cotRes=await fetchCOT();setCot(cotRes);setCotLoading(false);
       setApiStatus(s=>({...s,cftc:cotRes.some(c=>c.live)?'live':'error'}));
       // Claude scoring + GDELT derived
-      const [hRes,geoRes,scRes]=await Promise.all([fetchHawkishness(),fetchGeoRisk(),fetchSupplyChain()]);
+      const [hRes,geoRes,scRes]=await Promise.all([fetchHawkishness(apiKeys.claude_key),fetchGeoRisk(),fetchSupplyChain()]);
       setHawk(hRes);setGeo(geoRes);setSC(scRes);
     })();
   },[]);
@@ -1415,8 +2039,8 @@ function AlphaOS(){
     return ord.map(n=>{const p=P[n];return{n,v:p?fmt(p.price,n==='VIX'||n.includes('USD')||n==='DXY'?2:2):null,c:p?fmtPct(p.pct):null,up:p?(p.pct||0)>=0:true};}).filter(t=>t.v);
   },[prices]);
 
-  const INTEL=['BRIEFING','QUERY'];const MKT=['MACRO','FLOWS','ALTDATA','NLP','COMMOD'];
-  const LBL={BRIEFING:'BRIEFING',QUERY:'ALPHAQUERY',MACRO:'MACRO',FLOWS:'FLOWS',ALTDATA:'ALT DATA',NLP:'NLP INTEL',COMMOD:'COMMODITIES'};
+  const INTEL=['BRIEFING','QUERY'];const MKT=['MACRO','FLOWS','ALTDATA','NLP','COMMOD','PSD'];
+  const LBL={BRIEFING:'BRIEFING',QUERY:'ALPHAQUERY',MACRO:'MACRO',FLOWS:'FLOWS',ALTDATA:'ALT DATA',NLP:'NLP INTEL',COMMOD:'COMMODITIES',PSD:'PSD WORKBENCH'};
 
   return React.createElement('div',{style:{display:'flex',flexDirection:'column',height:'100vh',background:C.bg,fontFamily:'IBM Plex Mono,monospace',overflow:'hidden'}},
     React.createElement('style',null,'@keyframes alphaTick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}@keyframes alphaPulse{0%,100%{opacity:1}50%{opacity:0.3}}@keyframes alphaDot{0%,80%,100%{opacity:0.3;transform:scale(0.8)}40%{opacity:1;transform:scale(1)}}@keyframes shimmer{0%{opacity:0.3}50%{opacity:0.7}100%{opacity:0.3}}::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:#050810}::-webkit-scrollbar-thumb{background:#141830;border-radius:2px}input::placeholder{color:#1a2238}'),
@@ -1453,13 +2077,14 @@ function AlphaOS(){
     ),
     /* CONTENT */
     React.createElement('div',{style:{flex:1,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0}},
-      mod==='BRIEFING'&&React.createElement(BriefingModule,{ctx}),
-      mod==='QUERY'&&   React.createElement(QueryModule,{ctx}),
+      mod==='BRIEFING'&&React.createElement(BriefingModule,{ctx,claudeKey:apiKeys.claude_key}),
+      mod==='QUERY'&&   React.createElement(QueryModule,{ctx,claudeKey:apiKeys.claude_key}),
       mod==='MACRO'&&   React.createElement(MacroModule,{prices,yields,fred,hawk,setDetail}),
       mod==='FLOWS'&&   React.createElement(FlowsModule,{cot,loading:cotLoading,setDetail,esr}),
       mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail,ams}),
       mod==='NLP'&&     React.createElement(NLPModule,{hawk,sc,geo,setDetail}),
-      mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr})
+      mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr}),
+      mod==='PSD'&&     React.createElement(PSDWorkbench,{psd,psdKey:apiKeys.psd,fetchPSDYear,fetchPSDHistory})
     ),
     /* STATUS BAR */
     React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
