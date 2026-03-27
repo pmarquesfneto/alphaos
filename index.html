@@ -115,9 +115,9 @@ async function fetchENSO(){
     try{
       const r=await fetch(url);if(!r.ok)continue;
       const text=await r.text();
-      const lines=text.trim().split('\n').filter(l=>l.trim()&&!/^\s*SEAS/.test(l)&&!/^\s*YR/.test(l));
+      const lines=text.trim().split('\n').filter(l=>{const t=l.trim();return t&&!t.startsWith('SEAS')&&!t.startsWith('YR')&&!/^[A-Z\s]+$/.test(t);});
       if(!lines.length)continue;
-      const parse=l=>{const p=l.trim().split(/\s+/);return{seas:p[0],yr:parseInt(p[1]),anom:parseFloat(p[4])};};
+      const parse=l=>{const p=l.trim().split(/\s+/);return{seas:p[0],yr:parseInt(p[1]),anom:parseFloat(p[3])};};
       const recent=lines.slice(-4).map(parse).filter(d=>!isNaN(d.anom));
       if(!recent.length)continue;
       const lat=recent[recent.length-1];
