@@ -24,7 +24,7 @@ input::placeholder{color:#1a2238}
 /* AlphaOS v4.0 — Zero mock data. Every value from a live API or shows CONNECT [SOURCE] state. */
 (function(){
 const {useState,useEffect,useRef,useMemo}=React;
-const C={bg:'#020407',s1:'#050810',s2:'#080c18',border:'#0d1122',accent:'#3a6af0',green:'#14a068',red:'#cc3848',gold:'#c49020',rose:'#b82860',text:'#7888a8',hi:'#b8c8e4',muted:'#1a2238',dim:'#04060e'};
+const C={bg:'#020407',s1:'#050810',s2:'#080c18',border:'#0d1122',accent:'#3a6af0',green:'#14a068',red:'#cc3848',gold:'#c49020',rose:'#b82860',text:'#7888a8',hi:'#b8c8e4',muted:'#4a5878',track:'#1a2238',dim:'#04060e'};
 const up=v=>v>0?C.green:v<0?C.red:C.text;
 const sevC=s=>s==='HIGH'||s==='CRITICAL'?C.red:s==='MEDIUM'?C.gold:C.text;
 const fmt=(v,d=2)=>v!=null&&!isNaN(v)?parseFloat(v).toFixed(d):'\u2014';
@@ -262,7 +262,7 @@ function Dot({s}){
   const c=s==='live'?C.green:s==='needs_key'||s==='partial'?C.gold:s==='error'?C.red:C.muted;
   return React.createElement('div',{style:{width:5,height:5,borderRadius:'50%',background:c,flexShrink:0,animation:s==='live'?'alphaPulse 2s infinite':'none'}});
 }
-function Skel({w=60,h=14}){return React.createElement('div',{style:{width:w,height:h,background:C.muted,borderRadius:2,animation:'shimmer 1.5s ease-in-out infinite'}});}
+function Skel({w=60,h=14}){return React.createElement('div',{style:{width:w,height:h,background:C.track,borderRadius:2,animation:'shimmer 1.5s ease-in-out infinite'}});}
 function NeedAPI({name,url,what}){
   return React.createElement('div',{style:{padding:'10px 12px',background:C.s2,border:'1px dashed '+C.gold+'30',borderRadius:2,marginTop:4}},
     React.createElement('div',{style:{fontSize:7,color:C.gold,letterSpacing:'1px',marginBottom:4}},'⚠ '+name+' — NOT CONNECTED'),
@@ -307,7 +307,7 @@ function MacroModule({prices,yields,fred,hawk}){
         Object.keys(HS).length>0?
           React.createElement('div',{style:{marginTop:4}},Object.entries(HS).map(([n,d])=>React.createElement('div',{key:n,style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border}},
             React.createElement('span',{style:{fontSize:8,color:C.text,width:32}},n),
-            React.createElement('div',{style:{flex:1,height:4,background:C.muted}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
+            React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
             React.createElement('span',{style:{fontSize:10,color:d.score>65?C.red:d.score>45?C.gold:C.green,width:28,textAlign:'right',fontWeight:600}},d.score),
             React.createElement('span',{style:{fontSize:7,color:d.change?.startsWith('-')?C.green:C.red,width:30,textAlign:'right'}},d.change)
           ))):
@@ -358,7 +358,7 @@ function FlowsModule({cot,loading}){
             return React.createElement('div',{key:m.label,style:{display:'flex',alignItems:'center',gap:6,padding:'5px 0',borderBottom:'1px solid '+C.border}},
               React.createElement('span',{style:{fontSize:8,color:C.text,width:68,flexShrink:0}},m.label),
               m.live?badge(m.pct+'th',bc):badge('?',C.muted),
-              React.createElement('div',{style:{flex:1,height:4,background:C.muted}},React.createElement('div',{style:{height:'100%',width:pct+'%',background:isL?C.green:C.red}})),
+              React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:pct+'%',background:isL?C.green:C.red}})),
               React.createElement('span',{style:{fontSize:8,color:isL?C.green:C.red,width:72,textAlign:'right',flexShrink:0}},(isL?'+':'')+((m.net||0)/1000).toFixed(0)+'K nets'),
               m.live&&React.createElement('span',{style:{fontSize:7,color:up(m.chg||0),width:52,textAlign:'right',flexShrink:0}},(m.chg>0?'+':'')+((m.chg||0)/1000).toFixed(1)+'K WoW')
             );
@@ -437,7 +437,7 @@ function NLPModule({hawk,sc,geo}){
         Object.keys(HS).length>0?[
           React.createElement('div',{key:'bars',style:{marginTop:4}},Object.entries(HS).map(([n,d])=>React.createElement('div',{key:n,style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border}},
             React.createElement('span',{style:{fontSize:8,color:C.text,width:32}},n),
-            React.createElement('div',{style:{flex:1,height:4,background:C.muted}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
+            React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
             React.createElement('span',{style:{fontSize:10,color:d.score>65?C.red:d.score>45?C.gold:C.green,width:28,textAlign:'right',fontWeight:600}},d.score),
             React.createElement('span',{style:{fontSize:7,color:d.change?.startsWith('-')?C.green:C.red,width:30,textAlign:'right'}},d.change)
           ))),
@@ -451,7 +451,7 @@ function NLPModule({hawk,sc,geo}){
         ),
         SC.length>0?React.createElement('div',null,SC.map(s=>React.createElement('div',{key:s.s,style:{display:'flex',alignItems:'center',gap:8,padding:'4px 0',borderBottom:'1px solid '+C.border}},
           React.createElement('span',{style:{fontSize:8,color:C.text,flex:1}},s.s),
-          React.createElement('div',{style:{width:80,height:3,background:C.muted,flexShrink:0}},React.createElement('div',{style:{height:'100%',width:s.idx+'%',background:s.idx>65?C.red:s.idx>50?C.gold:C.green}})),
+          React.createElement('div',{style:{width:80,height:3,background:C.track,flexShrink:0}},React.createElement('div',{style:{height:'100%',width:s.idx+'%',background:s.idx>65?C.red:s.idx>50?C.gold:C.green}})),
           s.live?badge(s.idx+'',s.idx>65?C.red:s.idx>50?C.gold:C.green):badge('?',C.muted)
         ))):React.createElement('div',{style:{padding:'10px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT SECTOR DATA…')
       ])
@@ -462,9 +462,9 @@ function NLPModule({hawk,sc,geo}){
           GR.map(g=>React.createElement('div',{key:g.r,style:{background:C.s2,border:'1px solid '+C.border,padding:12}},
             React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},React.createElement('div',{style:{fontSize:7,color:C.muted}},g.r),g.live?badge('LIVE',C.green):badge('?',C.muted)),
             React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('CONFLICT IDX'),lbl(g.ci+'',g.ci>60?C.red:C.gold,{fontSize:12,fontWeight:600})),
-            React.createElement('div',{style:{height:3,background:C.muted,marginBottom:10}},React.createElement('div',{style:{height:'100%',width:g.ci+'%',background:g.ci>60?C.red:C.gold}})),
+            React.createElement('div',{style:{height:3,background:C.track,marginBottom:10}},React.createElement('div',{style:{height:'100%',width:g.ci+'%',background:g.ci>60?C.red:C.gold}})),
             React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('ECONOMIC IDX'),lbl(g.ei+'',g.ei>55?C.green:C.gold,{fontSize:12,fontWeight:600})),
-            React.createElement('div',{style:{height:3,background:C.muted}},React.createElement('div',{style:{height:'100%',width:g.ei+'%',background:g.ei>55?C.green:C.gold}})),
+            React.createElement('div',{style:{height:3,background:C.track}},React.createElement('div',{style:{height:'100%',width:g.ei+'%',background:g.ei>55?C.green:C.gold}})),
             g.live&&React.createElement('div',{style:{marginTop:6,fontSize:6,color:C.muted}},g.n+' articles · avg tone '+g.tone)
           ))):
         React.createElement('div',{style:{padding:'12px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT GEOPOLITICAL DATA…')
@@ -483,7 +483,7 @@ function CommodModule({cot,prices,usda}){
   const sevColor=s=>s>70?C.red:s>40?C.gold:C.green;
   return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
     React.createElement('div',{style:{display:'flex',gap:0,borderBottom:'1px solid '+C.border,marginBottom:12}},
-      CROPS.map(c=>React.createElement('button',{key:c,onClick:()=>setCrop(c),style:{fontSize:7,letterSpacing:'1px',padding:'5px 12px',cursor:'pointer',background:'transparent',border:'none',color:c===crop?C.gold:C.muted,borderBottom:'2px solid '+(c===crop?C.gold:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s',whiteSpace:'nowrap'}},c))
+      CROPS.map(c=>React.createElement('button',{key:c,onClick:()=>setCrop(c),style:{fontSize:8,letterSpacing:'1px',padding:'5px 12px',cursor:'pointer',background:c===crop?C.gold+'15':'transparent',border:'none',color:c===crop?C.gold:C.muted,borderBottom:'2px solid '+(c===crop?C.gold:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s',whiteSpace:'nowrap'}},c))
     ),
     React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:8}},
       card([cardH('PRICE',EXCH[crop]+' · '+(priceItem?'LIVE · Yahoo Finance':'OFFLINE'),priceItem?C.green:C.gold),
@@ -717,11 +717,11 @@ function AlphaOS(){
       )
     ),
     /* NAV */
-    React.createElement('div',{style:{background:C.s1,borderBottom:'1px solid '+C.border,display:'flex',alignItems:'center',padding:'0 16px',height:32,flexShrink:0,gap:2}},
-      React.createElement('span',{style:{fontSize:6,letterSpacing:'2px',color:C.muted,marginRight:8,paddingRight:10,borderRight:'1px solid '+C.border}},'INTEL'),
-      INTEL.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:7,letterSpacing:'1.5px',padding:'4px 12px',cursor:'pointer',background:'transparent',border:'none',color:mod===m?C.rose:C.muted,borderBottom:'2px solid '+(mod===m?C.rose:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m])),
-      React.createElement('span',{style:{fontSize:6,letterSpacing:'2px',color:C.muted,margin:'0 10px',padding:'0 10px',borderLeft:'1px solid '+C.border,borderRight:'1px solid '+C.border}},'MARKET'),
-      MKT.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:7,letterSpacing:'1.5px',padding:'4px 12px',cursor:'pointer',background:'transparent',border:'none',color:mod===m?C.accent:C.muted,borderBottom:'2px solid '+(mod===m?C.accent:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m]))
+    React.createElement('div',{style:{background:C.s1,borderBottom:'1px solid '+C.border,display:'flex',alignItems:'center',padding:'0 16px',height:34,flexShrink:0,gap:2}},
+      React.createElement('span',{style:{fontSize:7,letterSpacing:'2px',color:C.text,marginRight:8,paddingRight:10,borderRight:'1px solid '+C.border}},'INTEL'),
+      INTEL.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:8,letterSpacing:'1.5px',padding:'4px 14px',cursor:'pointer',background:mod===m?C.rose+'18':'transparent',border:'none',color:mod===m?C.rose:C.muted,borderBottom:'2px solid '+(mod===m?C.rose:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m])),
+      React.createElement('span',{style:{fontSize:7,letterSpacing:'2px',color:C.text,margin:'0 10px',padding:'0 10px',borderLeft:'1px solid '+C.border,borderRight:'1px solid '+C.border}},'MARKET'),
+      MKT.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:8,letterSpacing:'1.5px',padding:'4px 14px',cursor:'pointer',background:mod===m?C.accent+'18':'transparent',border:'none',color:mod===m?C.accent:C.muted,borderBottom:'2px solid '+(mod===m?C.accent:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m]))
     ),
     /* CONTENT */
     React.createElement('div',{style:{flex:1,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0}},
@@ -737,7 +737,7 @@ function AlphaOS(){
     React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
       Object.entries(apiStatus).map(([k,v])=>React.createElement('div',{key:k,style:{display:'flex',gap:5,alignItems:'center',flexShrink:0}},
         React.createElement(Dot,{s:v}),
-        React.createElement('span',{style:{fontSize:6,letterSpacing:'1.5px',color:v==='live'?C.green:v==='needs_key'?C.gold:v==='error'?C.red:C.muted,whiteSpace:'nowrap'}},k.toUpperCase()+' '+(v==='live'?'LIVE':v==='needs_key'?'KEY NEEDED':v==='error'?'ERROR':v.toUpperCase()))
+        React.createElement('span',{style:{fontSize:6,letterSpacing:'1.5px',color:v==='live'?C.green:v==='needs_key'?C.gold:v==='error'?C.red:C.text,whiteSpace:'nowrap'}},k.toUpperCase()+' '+(v==='live'?'LIVE':v==='needs_key'?'KEY NEEDED':v==='error'?'ERROR':v.toUpperCase()))
       )),
       React.createElement('div',{style:{marginLeft:'auto',fontSize:6,color:C.muted,whiteSpace:'nowrap',flexShrink:0}},'AlphaOS v4.0 · Zero mock data · All values from live APIs · '+new Date().toLocaleDateString())
     ),
