@@ -194,8 +194,11 @@ async function fetchFRED(key){
   const out=[];
   for(const s of series){
     try{
-      const r=await fetch('https://api.stlouisfed.org/fred/series/observations?series_id='+s.id+'&api_key='+key+'&file_type=json&sort_order=desc&limit=8');
-      if(!r.ok)continue;const d=await r.json();
+      const fredUrl='https://api.stlouisfed.org/fred/series/observations?series_id='+s.id+'&api_key='+key+'&file_type=json&sort_order=desc&limit=8';
+      const urls=[fredUrl,'https://corsproxy.io/?'+encodeURIComponent(fredUrl)];
+      let d=null;
+      for(const url of urls){try{const r=await fetch(url);if(!r.ok)continue;d=await r.json();if(d.observations)break;}catch(e){}}
+      if(!d)continue;
       const obs=(d.observations||[]).filter(o=>o.value!=='.');
       if(obs[0])out.push({id:s.id,label:s.l,value:parseFloat(obs[0].value),prev:parseFloat(obs[1]?.value||obs[0].value),date:obs[0].date,hist:obs.slice(0,8).reverse().map(o=>parseFloat(o.value))});
     }catch(e){}
