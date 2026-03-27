@@ -1652,7 +1652,7 @@ const PSD_ATTRS_DEF={
 const PSD_ATTR_IDS=[20,28,57,86,88,125,176,195];
 const PSD_YEARS=[2018,2019,2020,2021,2022,2023,2024,2025];
 
-function PSDWorkbench({psd,psdKey,fetchPSDYear,fetchPSDHistory}){
+function PSDWorkbench({psd,psdKey}){
   const CE=React.createElement;
   const [selCrops,setSelCrops]=useState(['CORN','SOYBEANS','WHEAT']);
   const [selAttrs,setSelAttrs]=useState([28,176,125,195]);
@@ -1691,24 +1691,37 @@ function PSDWorkbench({psd,psdKey,fetchPSDYear,fetchPSDHistory}){
     return d.rawByCC?.[cc]?.[attrId]??null;
   },[tableData]);
 
-  // Fetch data for selected crops+years
+  // Inline fetch — no closure/prop dependency
+  const doFetch=React.useCallback(async(crop,year)=>{
+    const meta=PSD_CROPS[crop];if(!meta||!psdKey)return null;
+    const base='https://api.fas.usda.gov/api/psd/commodity/'+meta.code+'/country/all/year/'+year+'?api_key='+psdKey;
+    for(const url of [base,'https://corsproxy.io/?'+encodeURIComponent(base)]){
+      try{
+        const r=await fetch(url,{headers:{Accept:'application/json'}});if(!r.ok)continue;
+        const rows=await r.json();if(!Array.isArray(rows)||!rows.length)continue;
+        const sum=id=>rows.filter(d=>d.attributeId===id).reduce((s,d)=>s+parseFloat(d.value||0),0);
+        const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125),wEnd=sum(176);
+        const wSU=wDom>0?Math.round((wEnd/wDom)*1000)/10:null;
+        const rawByCC={};rows.forEach(d=>{if(!rawByCC[d.countryCode])rawByCC[d.countryCode]={};rawByCC[d.countryCode][d.attributeId]=parseFloat(d.value||0);});
+        const mkCC=cc=>{const v=rawByCC[cc]||{};const dom=v[125]??null,end=v[176]??null;return{begStocks:v[20]??null,production:v[28]??null,imports:v[57]??null,totalSupply:v[86]??null,exports:v[88]??null,domConsumption:dom,endingStocks:end,stocksToUse:dom!=null&&dom>0&&end!=null?Math.round((end/dom)*1000)/10:null};};
+        const topProd=rows.filter(d=>d.attributeId===28&&parseFloat(d.value)>0).sort((a,b)=>parseFloat(b.value)-parseFloat(a.value)).slice(0,8).map(d=>({cc:d.countryCode,val:parseFloat(d.value)}));
+        return{year,rawByCC,world:{begStocks:Math.round(wBeg),production:Math.round(wProd),imports:Math.round(wImp),totalSupply:Math.round(wTot),exports:Math.round(wExp),domConsumption:Math.round(wDom),endingStocks:Math.round(wEnd),stocksToUse:wSU},us:mkCC('US'),topProducers:topProd};
+      }catch(e){}
+    }return null;
+  },[psdKey]);
   useEffect(()=>{
     if(!psdKey)return;
     const needed=[];
-    selCrops.forEach(crop=>selYears.forEach(year=>{
-      const k=crop+'_'+year;
-      if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});
-    }));
+    selCrops.forEach(crop=>selYears.forEach(year=>{const k=crop+'_'+year;if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});}));
     if(!needed.length)return;
     setLoadingKeys(prev=>{const n=new Set(prev);needed.forEach(({k})=>n.add(k));return n;});
-    needed.forEach(async({crop,year,k})=>{
-      try{
-        const d=await fetchPSDYear(psdKey,crop,year);
+    needed.forEach(({crop,year,k})=>{
+      doFetch(crop,year).then(d=>{
         setTableData(prev=>({...prev,[k]:d||null}));
-      }catch(e){}
-      setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;});
+        setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;});
+      }).catch(()=>setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;}));
     });
-  },[psdKey,selCrops,selYears]);
+  },[psdKey,selCrops,selYears,doFetch]);
 
   const toggle=(arr,setArr,v)=>setArr(p=>p.includes(v)?p.filter(x=>x!==v):[...p,v]);
   const toggleY=y=>setSelYears(p=>(p.includes(y)?p.filter(x=>x!==y):[...p,y]).sort((a,b)=>a-b));
@@ -2087,7 +2100,7 @@ function AlphaOS(){
       mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail,ams}),
       mod==='NLP'&&     React.createElement(NLPModule,{hawk,sc,geo,setDetail}),
       mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr}),
-      mod==='PSD'&&     React.createElement(PSDWorkbench,{psd,psdKey:apiKeys.psd,fetchPSDYear,fetchPSDHistory})
+      mod==='PSD'&&     React.createElement(PSDWorkbench,{psd,psdKey:apiKeys.psd})
     ),
     /* STATUS BAR */
     React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
