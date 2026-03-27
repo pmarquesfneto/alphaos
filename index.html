@@ -547,8 +547,8 @@ function FlowsModule({cot,loading,setDetail,esr}){
         live&&React.createElement('div',{style:{marginTop:8,display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}},
           [{l:'TOTAL NET',v:(totalNet>0?'+':'')+K(totalNet),c:totalNet>0?C.green:C.red},{l:'TOTAL LONGS',v:K(totalLong),c:C.green},{l:'TOTAL SHORTS',v:K(totalShort),c:C.red},{l:'AVG %ILE',v:avgPct+'th',c:heatCol}].map(s=>
             React.createElement('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:'6px 8px',display:'flex',justifyContent:'space-between',alignItems:'center'}},
-              React.createElement('span',{style:{fontSize:6,color:C.muted}}),s.l,
-              React.createElement('span',{style:{fontSize:10,fontWeight:700,color:s.c}}),s.v
+              React.createElement('span',{style:{fontSize:6,color:C.muted}},s.l),
+              React.createElement('span',{style:{fontSize:10,fontWeight:700,color:s.c}},s.v)
             )
           )
         )
@@ -573,10 +573,10 @@ function FlowsModule({cot,loading,setDetail,esr}){
             React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'MOST OVERBOUGHT (HIGH %ILE)'),
             [...liveCot].sort((a,b)=>b.pct-a.pct).slice(0,5).map(m=>
               React.createElement('div',{key:m.label,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
-                React.createElement('span',{style:{fontSize:8,color:C.text}}),m.label,
+                React.createElement('span',{style:{fontSize:8,color:C.text}},m.label),
                 React.createElement('div',{style:{display:'flex',alignItems:'center',gap:6}},
                   React.createElement('div',{style:{width:60,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:m.pct+'%',background:cotBc(m.pct)}})),
-                  React.createElement('span',{style:{fontSize:8,color:cotBc(m.pct),fontWeight:600,width:30,textAlign:'right'}}),m.pct+'th'
+                  React.createElement('span',{style:{fontSize:8,color:cotBc(m.pct),fontWeight:600,width:30,textAlign:'right'}},m.pct+'th')
                 )
               )
             )
@@ -585,8 +585,8 @@ function FlowsModule({cot,loading,setDetail,esr}){
             React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'LARGEST WoW CHANGE (FLOW)'),
             [...liveCot].sort((a,b)=>Math.abs(b.chg||0)-Math.abs(a.chg||0)).slice(0,5).map(m=>
               React.createElement('div',{key:m.label,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
-                React.createElement('span',{style:{fontSize:8,color:C.text}}),m.label,
-                React.createElement('span',{style:{fontSize:8,color:up(m.chg||0),fontWeight:600}}),(m.chg>0?'+':'')+K(m.chg||0)+' WoW'
+                React.createElement('span',{style:{fontSize:8,color:C.text}},m.label),
+                React.createElement('span',{style:{fontSize:8,color:up(m.chg||0),fontWeight:600}},(m.chg>0?'+':'')+K(m.chg||0)+' WoW')
               )
             )
           )
@@ -794,8 +794,8 @@ function CommodModule({cot,prices,usda,setDetail,psd,esr}){
             ),
             React.createElement('div',null,
               React.createElement('div',{style:{fontSize:11,fontWeight:700,color:cotItem.net>0?C.green:C.red}},(cotItem.net>0?'+':'')+Math.round(cotItem.net/1000)+'K net'),
-              React.createElement('div',{style:{fontSize:7,color:C.muted}}},cotItem.lng?Math.round(cotItem.lng/1000)+'K L / '+Math.round(cotItem.sht/1000)+'K S':''),
-              React.createElement('div',{style:{fontSize:7,color:up(cotItem.chg)}}),(cotItem.chg>0?'+':'')+Math.round(cotItem.chg/1000)+'K WoW')
+              React.createElement('div',{style:{fontSize:7,color:C.muted}},cotItem.lng?Math.round(cotItem.lng/1000)+'K L / '+Math.round(cotItem.sht/1000)+'K S':''),
+              React.createElement('div',{style:{fontSize:7,color:up(cotItem.chg)}},(cotItem.chg>0?'+':'')+Math.round(cotItem.chg/1000)+'K WoW')
             )
           )
         ):React.createElement(Skel,{w:120,h:36})
@@ -914,8 +914,8 @@ function CommodModule({cot,prices,usda,setDetail,psd,esr}){
         React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginTop:8,marginBottom:10}},
           [{l:'52w %ILE',v:cotItem.pct+'th',c:sevColor(cotItem.pct)},{l:'NET SPEC',v:(cotItem.net>0?'+':'')+Math.round(cotItem.net/1000)+'K',c:cotItem.net>0?C.green:C.red},{l:'SPEC LONGS',v:Math.round(cotItem.lng/1000)+'K',c:C.green},{l:'SPEC SHORTS',v:Math.round(cotItem.sht/1000)+'K',c:C.red},{l:'OPEN INT',v:Math.round(cotItem.oi/1000)+'K',c:C.hi}].map(s=>
             React.createElement('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:'8px 6px',textAlign:'center'}},
-              React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}}),s.l,
-              React.createElement('div',{style:{fontSize:12,fontWeight:700,color:s.c}}),s.v
+              React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},s.l),
+              React.createElement('div',{style:{fontSize:12,fontWeight:700,color:s.c}},s.v)
             )
           )
         ),
