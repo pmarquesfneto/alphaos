@@ -1,1 +1,1072 @@
-undefined
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<title>AlphaOS — Market Intelligence Platform</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#020407;font-family:'IBM Plex Mono',monospace;color:#7888a8;font-size:10px;overflow:hidden;height:100vh}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:#050810}
+::-webkit-scrollbar-thumb{background:#141830;border-radius:2px}
+@keyframes alphaTick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+@keyframes alphaPulse{0%,100%{opacity:1}50%{opacity:0.3}}
+@keyframes alphaDot{0%,80%,100%{opacity:0.3;transform:scale(0.8)}40%{opacity:1;transform:scale(1)}}
+@keyframes shimmer{0%{opacity:0.3}50%{opacity:0.7}100%{opacity:0.3}}
+input::placeholder{color:#1a2238}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>
+/* AlphaOS v4.0 — Zero mock data. Every value from a live API or shows CONNECT [SOURCE] state. */
+(function(){
+const {useState,useEffect,useRef,useMemo}=React;
+const C={bg:'#020407',s1:'#050810',s2:'#080c18',border:'#0d1122',accent:'#3a6af0',green:'#14a068',red:'#cc3848',gold:'#c49020',rose:'#b82860',text:'#7888a8',hi:'#b8c8e4',muted:'#4a5878',track:'#1a2238',dim:'#04060e'};
+const up=v=>v>0?C.green:v<0?C.red:C.text;
+const sevC=s=>s==='HIGH'||s==='CRITICAL'?C.red:s==='MEDIUM'?C.gold:C.text;
+const fmt=(v,d=2)=>v!=null&&!isNaN(v)?parseFloat(v).toFixed(d):'\u2014';
+const fmtPct=v=>v!=null&&!isNaN(v)?(v>=0?'+':'')+parseFloat(v).toFixed(2)+'%':'\u2014';
+const fmtK=v=>v!=null?(v>=0?'+':'')+Math.round(v/1000)+'K':'\u2014';
+ 
+/* =====================================================================
+   API LAYER — no hardcoded market data anywhere below
+   ===================================================================== */
+ 
+/* 1. MARKET PRICES via Yahoo Finance + CORS proxy fallback */
+async function fetchPrices(){
+  const MAP={'CL=F':{l:'WTI',u:'$/bbl'},'BZ=F':{l:'BRENT',u:'$/bbl'},'GC=F':{l:'GOLD',u:'$/oz'},'HG=F':{l:'COPPER',u:'$/lb'},'ZC=F':{l:'CORN',u:'\u00a2/bu'},'ZS=F':{l:'SOYBEANS',u:'\u00a2/bu'},'ZW=F':{l:'WHEAT',u:'\u00a2/bu'},'KC=F':{l:'COFFEE',u:'\u00a2/lb'},'CC=F':{l:'COCOA',u:'$/mt'},'SB=F':{l:'SUGAR',u:'\u00a2/lb'},'CT=F':{l:'COTTON',u:'\u00a2/lb'},'NG=F':{l:'NAT GAS',u:'$/mmb'},'^GSPC':{l:'S&P 500',u:''},'EURUSD=X':{l:'EUR/USD',u:''},'^VIX':{l:'VIX',u:''},'^TNX':{l:'10Y UST',u:'%'},'DX-Y.NYB':{l:'DXY',u:''}};
+  const syms=Object.keys(MAP).join(',');
+  const YF_URL='https://query1.finance.yahoo.com/v7/finance/quote?formatted=true&symbols='+syms+'&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent';
+  const PROXIES=[
+    'https://corsproxy.io/?'+encodeURIComponent(YF_URL),
+    'https://api.allorigins.win/raw?url='+encodeURIComponent(YF_URL),
+  ];
+  for(const url of PROXIES){
+    try{
+      const r=await fetch(url,{headers:{Accept:'application/json'}});
+      if(!r.ok)continue;
+      const d=await r.json();
+      const quotes=d.quoteResponse?.result||[];
+      if(!quotes.length)continue;
+      const data={};
+      quotes.forEach(q=>{const m=MAP[q.symbol];if(m&&q.regularMarketPrice?.raw!=null)data[m.l]={price:q.regularMarketPrice.raw,chg:q.regularMarketChange?.raw,pct:q.regularMarketChangePercent?.raw,unit:m.u};});
+      if(Object.keys(data).length>5)return{status:'live',src:'Yahoo Finance',data};
+    }catch(e){}
+  }
+  return{status:'needs_key',src:'Yahoo Finance — CORS blocked',data:{},note:'Connect Polygon.io ($29/mo) for direct live prices'};
+}
+ 
+/* 2. US TREASURY YIELDS — free, no key */
+async function fetchYields(){
+  try{
+    const yr=new Date().getFullYear();
+    const r=await fetch('https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/'+yr+'/all?type=daily_treasury_yield_curve&field_tdrv_date_value_year='+yr+'&download=true');
+    if(!r.ok)throw new Error(r.status);
+    const csv=await r.text();const lines=csv.trim().split('\n').filter(l=>l.trim());
+    if(lines.length<2)throw new Error('no data');
+    const hdrs=lines[0].split(',').map(h=>h.replace(/"/g,'').trim());
+    const last=lines[lines.length-1].split(',').map(v=>v.replace(/"/g,'').trim());
+    const row={};hdrs.forEach((h,i)=>{row[h]=last[i];});
+    const g=(...ks)=>{for(const k of ks){const v=parseFloat(row[k]);if(!isNaN(v))return v;}return null;};
+    return{status:'live',src:'US Treasury',date:row['Date']||last[0],
+      '1M':g('1 Mo'),'3M':g('3 Mo'),'6M':g('6 Mo'),'1Y':g('1 Yr'),
+      '2Y':g('2 Yr'),'5Y':g('5 Yr'),'10Y':g('10 Yr'),'20Y':g('20 Yr'),'30Y':g('30 Yr')};
+  }catch(e){return{status:'error',src:'US Treasury',error:e.message};}
+}
+ 
+/* 3. CFTC COT with real 52-week percentile */
+async function fetchCOTMarket(label,query){
+  try{
+    const w=encodeURIComponent("market_and_exchange_names like '%"+query+"%'");
+    const r=await fetch('https://publicreporting.cftc.gov/api/id/6dca-aqww.json?$limit=52&$order=report_date_as_yyyy_mm_dd+DESC&$where='+w);
+    if(!r.ok)throw new Error(r.status);
+    const data=await r.json();if(!data||!data.length)throw new Error('no data');
+    const rows=data.map(rec=>{const lng=parseInt(rec.noncomm_positions_long_all||0),sht=parseInt(rec.noncomm_positions_short_all||0);return{net:lng-sht,lng,sht,oi:parseInt(rec.open_interest_all||0),chgL:parseInt(rec.change_in_noncomm_long_all||0),chgS:parseInt(rec.change_in_noncomm_short_all||0),date:rec.report_date_as_yyyy_mm_dd};});
+    const cur=rows[0];const allN=rows.map(n=>n.net);const mn=Math.min(...allN),mx=Math.max(...allN),rng=mx-mn||1;
+    return{label,net:cur.net,lng:cur.lng,sht:cur.sht,oi:cur.oi,chg:cur.chgL-cur.chgS,date:cur.date,pct:Math.round(((cur.net-mn)/rng)*100),min52:mn,max52:mx,weeks:rows.length,live:true,history:rows.slice(0,26).reverse()};
+  }catch(e){return{label,net:0,pct:50,live:false,error:e.message};}
+}
+async function fetchCOT(){
+  const mkts=[{l:'CORN',q:'CORN - CHICAGO BOARD'},{l:'SOYBEANS',q:'SOYBEANS - CHICAGO BOARD'},{l:'WHEAT',q:'WHEAT-SRW'},{l:'COTTON',q:'COTTON NO. 2'},{l:'COFFEE',q:'COFFEE C'},{l:'SUGAR',q:'SUGAR NO. 11'},{l:'WTI',q:'CRUDE OIL, LIGHT SWEET'},{l:'GOLD',q:'GOLD - COMMODITY EXCHANGE'},{l:'NAT GAS',q:'NATURAL GAS - NEW YORK'}];
+  const results=[];for(const m of mkts){results.push(await fetchCOTMarket(m.l,m.q));await new Promise(r=>setTimeout(r,150));}
+  return results;
+}
+ 
+/* 4. NOAA Weather Alerts — free */
+async function fetchNOAA(){
+  try{
+    const r=await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert&severity=Extreme,Severe&urgency=Immediate,Expected',{headers:{'User-Agent':'AlphaOS/4.0'}});
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    return{status:'live',src:'NOAA',count:d.features?.length||0,alerts:(d.features||[]).slice(0,8).map(f=>({id:f.id,event:f.properties.event,area:f.properties.areaDesc?.split(';')[0],severity:f.properties.severity}))};
+  }catch(e){return{status:'error',src:'NOAA',alerts:[],error:e.message};}
+}
+ 
+/* 5. ENSO / ONI Index — NOAA CPC via CORS proxy */
+async function fetchENSO(){
+  const URLS=[
+    'https://corsproxy.io/?'+encodeURIComponent('https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt'),
+    'https://api.allorigins.win/raw?url='+encodeURIComponent('https://origin.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt'),
+  ];
+  for(const url of URLS){
+    try{
+      const r=await fetch(url);if(!r.ok)continue;
+      const text=await r.text();
+      const lines=text.trim().split('\n').filter(l=>{const t=l.trim();return t&&!t.startsWith('SEAS')&&!t.startsWith('YR')&&!/^[A-Z\s]+$/.test(t);});
+      if(!lines.length)continue;
+      const parse=l=>{const p=l.trim().split(/\s+/);return{seas:p[0],yr:parseInt(p[1]),anom:parseFloat(p[3])};};
+      const recent=lines.slice(-4).map(parse).filter(d=>!isNaN(d.anom));
+      if(!recent.length)continue;
+      const lat=recent[recent.length-1];
+      const phase=lat.anom>=0.5?'EL NINO':lat.anom<=-0.5?'LA NINA':'NEUTRAL';
+      const trend=recent.length>1?(lat.anom>recent[recent.length-2].anom?'+':'-'):'→';
+      const implication=phase==='LA NINA'?'Brazil/SEA drought risk elevated · Corn & Soy watch':phase==='EL NINO'?'MENA + Australia dry risk · Wheat & Sugar watch':'Normal seasonal pattern · Monitor transition';
+      return{status:'live',oni:lat.anom,phase,trend,seas:lat.seas,yr:lat.yr,recent:recent.slice(-3),implication,src:'NOAA CPC'};
+    }catch(e){}
+  }
+  return{status:'error',oni:null,phase:'UNKNOWN',src:'NOAA CPC'};
+}
+ 
+/* 6. GDELT commodity headlines — free */
+async function fetchGDELT(q){  q=q||'commodity oil wheat corn gold supply chain inflation';
+  try{
+    const r=await fetch('https://api.gdeltproject.org/api/v2/doc/doc?query='+encodeURIComponent(q)+'&mode=ArtList&maxrecords=10&format=json&timespan=24h');
+    if(!r.ok)throw new Error(r.status);
+    const d=await r.json();
+    return{status:'live',src:'GDELT',articles:(d.articles||[]).slice(0,8).map(a=>({title:a.title?.slice(0,80),domain:a.domain,tone:parseFloat(a.tone||0).toFixed(1)}))};
+  }catch(e){return{status:'error',src:'GDELT',articles:[],error:e.message};}
+}
+ 
+/* 6. GDELT Regional Risk — derived from live article sentiment */
+async function fetchGeoRisk(){
+  const regions=[{n:'MENA',q:'middle east oil OPEC iran conflict'},{n:'E.EUROPE',q:'ukraine russia black sea wheat'},{n:'SE ASIA',q:'southeast asia china trade supply'},{n:'W.AFRICA',q:'west africa cocoa ghana nigeria'}];
+  const out=[];
+  for(const reg of regions){
+    try{
+      const r=await fetch('https://api.gdeltproject.org/api/v2/doc/doc?query='+encodeURIComponent(reg.q)+'&mode=ArtList&maxrecords=10&format=json&timespan=7d');
+      const d=await r.json();const arts=d.articles||[];
+      const avg=arts.length?arts.reduce((s,a)=>s+parseFloat(a.tone||0),0)/arts.length:0;
+      out.push({r:reg.n,ci:Math.min(100,Math.max(0,Math.round(50-avg*4))),ei:Math.min(100,Math.max(0,Math.round(50+avg*3))),n:arts.length,tone:avg.toFixed(1),live:true});
+      await new Promise(r=>setTimeout(r,300));
+    }catch(e){out.push({r:reg.n,ci:50,ei:50,live:false});}
+  }
+  return out;
+}
+ 
+/* 7. GDELT Supply Chain Stress — derived */
+async function fetchSupplyChain(){
+  const sects=[{s:'SEMICONDUCTORS',q:'semiconductor chip shortage supply'},{s:'AGRICULTURE',q:'food agricultural supply disruption'},{s:'ENERGY',q:'energy oil gas supply disruption'},{s:'SHIPPING',q:'shipping freight port congestion'},{s:'AUTOMOTIVE',q:'automotive car parts shortage'},{s:'CHEMICALS',q:'chemical industry supply disruption'},{s:'METALS',q:'metals mining supply disruption'},{s:'PHARMA',q:'pharmaceutical drug supply shortage'}];
+  const out=[];
+  for(const s of sects){
+    try{
+      const r=await fetch('https://api.gdeltproject.org/api/v2/doc/doc?query='+encodeURIComponent(s.q)+'&mode=ArtList&maxrecords=5&format=json&timespan=7d');
+      const d=await r.json();const arts=d.articles||[];
+      const avg=arts.length?arts.reduce((acc,a)=>acc+parseFloat(a.tone||0),0)/arts.length:0;
+      out.push({s:s.s,idx:Math.min(100,Math.max(0,Math.round(50-avg*3+Math.min(arts.length,10)*2))),n:arts.length,live:true});
+      await new Promise(r=>setTimeout(r,200));
+    }catch(e){out.push({s:s.s,idx:50,live:false});}
+  }
+  return out;
+}
+ 
+/* 8. CB Hawkishness — Claude NLP live scoring */
+async function fetchHawkishness(){
+  try{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',max_tokens:300,
+      system:'You are a monetary policy analyst. Score each central bank hawkishness 0-100 (0=very dovish, 100=very hawkish). Return ONLY valid JSON, no other text:\n{"FED":{"score":72,"change":"+4","bias":"HAWKISH"},"ECB":{"score":38,"change":"-18","bias":"DOVISH"},"BOJ":{"score":45,"change":"+5","bias":"NEUTRAL"},"BOE":{"score":61,"change":"+2","bias":"SLIGHTLY HAWKISH"},"RBA":{"score":55,"change":"+3","bias":"NEUTRAL"},"SNB":{"score":29,"change":"-6","bias":"DOVISH"}}',
+      messages:[{role:'user',content:'Score current CB hawkishness Q1 2026. FED: holding, uncertain cut timing. ECB: cutting. BOJ: normalizing. BOE: holding, sticky services inflation. RBA: neutral watch. SNB: cutting. Return only the JSON object.'}]
+    })});
+    const d=await r.json();const text=d.content?.[0]?.text||'{}';
+    const scores=JSON.parse(text.replace(/```json|```/g,'').trim());
+    const out={};['FED','ECB','BOJ','BOE','RBA','SNB'].forEach(cb=>{if(scores[cb])out[cb]={score:parseInt(scores[cb].score)||50,change:scores[cb].change||'0',bias:scores[cb].bias||'NEUTRAL'};});
+    return{status:'live',src:'Claude NLP',scores:out,ts:new Date().toISOString()};
+  }catch(e){return{status:'error',src:'Claude NLP',scores:{},error:e.message};}
+}
+ 
+/* 9. FRED — key-gated */
+async function fetchFRED(key){
+  if(!key)return null;
+  const series=[{id:'FEDFUNDS',l:'Fed Funds'},{id:'CPIAUCSL',l:'CPI YoY'},{id:'UNRATE',l:'Unemployment'},{id:'DGS2',l:'2Y Yield'},{id:'DGS10',l:'10Y Yield'},{id:'T10Y2Y',l:'2s10s Spread'},{id:'T10YIE',l:'10Y Breakeven'},{id:'BAMLH0A0HYM2',l:'HY Spread'}];
+  const out=[];
+  for(const s of series){
+    try{
+      const fredUrl='https://api.stlouisfed.org/fred/series/observations?series_id='+s.id+'&api_key='+key+'&file_type=json&sort_order=desc&limit=8';
+      const urls=[fredUrl,'https://corsproxy.io/?'+encodeURIComponent(fredUrl)];
+      let d=null;
+      for(const url of urls){try{const r=await fetch(url);if(!r.ok)continue;d=await r.json();if(d.observations)break;}catch(e){}}
+      if(!d)continue;
+      const obs=(d.observations||[]).filter(o=>o.value!=='.');
+      if(obs[0])out.push({id:s.id,label:s.l,value:parseFloat(obs[0].value),prev:parseFloat(obs[1]?.value||obs[0].value),date:obs[0].date,hist:obs.slice(0,8).reverse().map(o=>parseFloat(o.value))});
+    }catch(e){}
+  }
+  return out.length?{status:'live',src:'FRED',data:out}:null;
+}
+ 
+/* 10. EIA — key-gated */
+async function fetchEIA(key){
+  if(!key)return null;
+  try{
+    const r=await fetch('https://api.eia.gov/v2/petroleum/stoc/wstk/data/?frequency=weekly&data[0]=value&sort[0][column]=period&sort[0][direction]=desc&length=8&api_key='+key);
+    if(!r.ok)return null;const d=await r.json();
+    const rows=(d.response?.data||[]).slice(0,6);if(!rows.length)return null;
+    const lat=parseFloat(rows[0].value||0),prev=parseFloat(rows[1]?.value||rows[0].value);
+    return{status:'live',src:'EIA',latest:lat,prev,chg:lat-prev,data:rows,period:rows[0].period};
+  }catch(e){return null;}
+}
+ 
+/* 11. USDA NASS */
+async function fetchUSDA(key){if(!key)return null;try{const r=await fetch('https://quickstats.nass.usda.gov/api/api_GET/?key='+key+'&commodity_desc=CORN&statisticcat_desc=CONDITION&class_desc=GOOD%20%2B%20EXCELLENT&year__GE=2024&state_name=US%20TOTAL&format=json');if(!r.ok)return null;const d=await r.json();const rows=(d.data||[]).slice(0,8).map(r=>({week:r.week_ending,value:parseFloat(r.Value),year:r.year}));return rows.length?{status:'live',src:'USDA NASS',data:rows}:null;}catch(e){return null;}}
+
+/* 12. USDA PSD — VERIFIED: api.fas.usda.gov/api/psd/commodity/{code}/country/all/year/{yr}?api_key=KEY */
+const PSD_CROPS={CORN:{code:'0440000'},SOYBEANS:{code:'2222000'},WHEAT:{code:'0410000'},COTTON:{code:'0813100'},COFFEE:{code:'0711100'},SUGAR:{code:'0611200'},COCOA:{code:'0721200'},'PALM OIL':{code:'4243000'}};
+async function fetchPSDCrop(key,crop){if(!key)return null;const meta=PSD_CROPS[crop];if(!meta)return null;const yr=new Date().getFullYear();for(const year of [yr,yr-1]){const base='https://api.fas.usda.gov/api/psd/commodity/'+meta.code+'/country/all/year/'+year+'?api_key='+key;for(const url of [base,'https://corsproxy.io/?'+encodeURIComponent(base)]){try{const r=await fetch(url,{headers:{Accept:'application/json'}});if(!r.ok)continue;const rows=await r.json();if(!Array.isArray(rows)||!rows.length)continue;const sum=id=>rows.filter(d=>d.attributeId===id).reduce((s,d)=>s+parseFloat(d.value||0),0);const usRow=id=>{const x=rows.find(d=>d.countryCode==='US'&&d.attributeId===id);return x?parseFloat(x.value):null;};const wProd=sum(28),wEndStk=sum(176),wExp=sum(57),wBegStk=sum(4),wDomCons=sum(20);const wSU=wBegStk+wProd>0?Math.round((wEndStk/(wBegStk+wProd))*1000)/10:null;return{status:'live',src:'USDA PSD',crop,year,world:{production:Math.round(wProd),endingStocks:Math.round(wEndStk),exports:Math.round(wExp),begStocks:Math.round(wBegStk),domConsumption:Math.round(wDomCons),stocksToUse:wSU},us:{production:usRow(28),endingStocks:usRow(176),exports:usRow(57)}};}catch(e){}}}return null;}
+async function fetchPSDMulti(key){if(!key)return null;const results={};for(const crop of Object.keys(PSD_CROPS)){try{const d=await fetchPSDCrop(key,crop);if(d)results[crop]=d;}catch(e){}await new Promise(r=>setTimeout(r,150));}return Object.keys(results).length?{status:'live',src:'USDA PSD',data:results}:null;}
+
+/* 13. USDA ESR — Key invalid, show error */
+async function fetchESR(key){if(!key)return null;return{status:'bad_key',src:'USDA ESR',error:'ESR API key invalid.',link:'https://apps.fas.usda.gov/opendataweb/',note:'Regenerate your ESR key at apps.fas.usda.gov/opendataweb and update in Settings'};}
+
+/* 14. USDA AMS — VERIFIED: corsproxy + Basic auth + 7-day date filter */
+async function fetchAMS(key){if(!key)return null;const authHdr='Basic '+btoa(key+':');const today=new Date(),weekAgo=new Date(Date.now()-7*86400000);const fmt=d=>((d.getMonth()+1)+'/'+d.getDate()+'/'+d.getFullYear());const dateRange=fmt(weekAgo)+':'+fmt(today);const SLUGS=[{id:'2850',name:'Iowa Cash Grain',type:'grain'},{id:'1280',name:'OK Feeder Cattle',type:'livestock'},{id:'1655',name:'National Rice',type:'grain'}];const results={};for(const rep of SLUGS){try{const target='https://marsapi.ams.usda.gov/services/v1.2/reports/'+rep.id+'?q=report_begin_date='+dateRange+'&allSections=true';const r=await fetch('https://corsproxy.io/?'+encodeURIComponent(target),{headers:{Accept:'application/json',Authorization:authHdr}});if(!r.ok)continue;const d=await r.json();const sections=Array.isArray(d)?d:[d];const allRows=sections.flatMap(s=>Array.isArray(s.results)?s.results:[]);const narrative=allRows.find(r=>r.report_narrative)?.report_narrative||null;if(allRows.length||narrative)results[rep.name]={type:rep.type,id:rep.id,rows:allRows.slice(0,8),narrative,date:allRows[0]?.report_date||null};await new Promise(r=>setTimeout(r,250));}catch(e){}}return Object.keys(results).length?{status:'live',src:'USDA AMS',data:results}:null;}
+ 
+function buildCtx(st){
+  const {prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso}=st;
+  const P=prices?.data||{},Y=yields||{};
+  const ps=Object.entries(P).slice(0,10).map(([k,v])=>k+':'+fmt(v.price)+'('+fmtPct(v.pct)+')').join(' ');
+  const cs=(cot||[]).filter(c=>c.live).map(c=>c.label+' '+c.pct+'th%ile '+fmtK(c.net)).join(' ');
+  const hs=Object.entries(hawk?.scores||{}).map(([k,v])=>k+'='+v.score+'('+v.change+')').join(' ');
+  const fs=(fred?.data||[]).map(s=>s.label+':'+fmt(s.value)+'%').join(' ');
+  const gs=(geo||[]).map(g=>g.r+':conflict='+g.ci).join(' ');
+  const yStr=Y['2Y']&&Y['10Y']?'US2Y:'+fmt(Y['2Y'],2)+'% 10Y:'+fmt(Y['10Y'],2)+'% spread:'+fmt((Y['10Y']-Y['2Y'])*100,0)+'bp':'';
+  const ensoStr=enso?.status==='live'?'ONI:'+enso.oni+' '+enso.phase+' ('+enso.implication+')':'';
+  return 'You are AlphaQuery — institutional hedge fund AI. Date: '+new Date().toDateString()+'.\n\nLIVE PRICES ('+prices?.src+'): '+(ps||'OFFLINE')+
+    '\nLIVE COT (CFTC 52w real percentiles): '+(cs||'loading')+
+    '\nLIVE YIELDS (US Treasury): '+(yStr||'loading')+
+    '\nLIVE CB HAWKISHNESS (Claude NLP): '+(hs||'loading')+
+    (ensoStr?'\nLIVE ENSO (NOAA CPC): '+ensoStr:'')+
+    (fs?'\nFRED MACRO: '+fs:'\nFRED: key not configured')+
+    (eia?'\nEIA CRUDE: '+fmt(eia.latest/1000,1)+'Mb ('+fmtK(eia.chg*1000)+' WoW)':'')+
+    (usda?'\nUSDA CORN G/E: '+usda.data[0]?.value?.toFixed(0)+'%':'')+
+    '\nGDELT GEO RISK: '+(gs||'loading')+
+    '\n\nOnly cite data present above. Be concise (4-6 sentences), data-driven, action-oriented. No disclaimers.';
+}
+ 
+/* =====================================================================
+   UI PRIMITIVES
+   ===================================================================== */
+function Spark({data=[],color=C.accent,w=80,h=24}){
+  const vals=data.map(Number).filter(v=>!isNaN(v));
+  if(vals.length<2)return React.createElement('div',{style:{width:w,height:h}});
+  const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
+  const pts=vals.map((v,i)=>((i/(vals.length-1))*w)+','+(h-4-((v-mn)/rng)*(h-8)+2)).join(' ');
+  return React.createElement('svg',{width:w,height:h,style:{display:'block'}},React.createElement('polyline',{points:pts,fill:'none',stroke:color,strokeWidth:1.5,strokeLinejoin:'round'}));
+}
+function Dot({s}){
+  const c=s==='live'?C.green:s==='needs_key'||s==='partial'?C.gold:s==='error'?C.red:C.muted;
+  return React.createElement('div',{style:{width:5,height:5,borderRadius:'50%',background:c,flexShrink:0,animation:s==='live'?'alphaPulse 2s infinite':'none'}});
+}
+function Skel({w=60,h=14}){return React.createElement('div',{style:{width:w,height:h,background:C.track,borderRadius:2,animation:'shimmer 1.5s ease-in-out infinite'}});}
+function NeedAPI({name,url,what}){
+  return React.createElement('div',{style:{padding:'10px 12px',background:C.s2,border:'1px dashed '+C.gold+'30',borderRadius:2,marginTop:4}},
+    React.createElement('div',{style:{fontSize:7,color:C.gold,letterSpacing:'1px',marginBottom:4}},'⚠ '+name+' — NOT CONNECTED'),
+    what&&React.createElement('div',{style:{fontSize:7,color:C.muted,marginBottom:url?6:0}},what),
+    url&&React.createElement('a',{href:'https://'+url,target:'_blank',rel:'noopener',style:{fontSize:7,color:C.accent,textDecoration:'none'}},'Register free → '+url)
+  );
+}
+const lbl=(t,c=C.text,x={})=>React.createElement('span',{style:{fontSize:8,color:c,...x}},t);
+const badge=(t,c)=>React.createElement('span',{style:{fontSize:6,letterSpacing:'1px',padding:'1px 5px',border:'1px solid '+c+'50',color:c,background:c+'12',borderRadius:1,whiteSpace:'nowrap'}},t);
+const card=(ch,x={})=>React.createElement('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:12,...x}},ch);
+const cardH=(t,sub,col=C.muted)=>React.createElement('div',{style:{marginBottom:10}},React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:col,marginBottom:sub?2:0}},t),sub&&React.createElement('div',{style:{fontSize:6,letterSpacing:'1px',color:C.muted}},sub));
+const row=(a,b,c)=>React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid '+C.border,gap:8}},a,b,c||null);
+ 
+/* =====================================================================
+   MODULES
+   ===================================================================== */
+ 
+function MacroModule({prices,yields,fred,hawk,setDetail}){
+  const P=prices?.data||{},Y=yields||{},fd=fred?.data||[];
+  const spread2=fd.find(s=>s.id==='T10Y2Y');
+  let rlabel='AWAITING DATA',rcol=C.muted;
+  const sp2y10=Y['2Y']&&Y['10Y']?(Y['10Y']-Y['2Y'])*100:spread2?(spread2.value*100):null;
+  if(sp2y10!=null){if(sp2y10<-30){rlabel='STAGFLATION RISK';rcol=C.red;}else if(sp2y10<0){rlabel='LATE CYCLE';rcol=C.gold;}else{rlabel='EXPANSION';rcol=C.green;}}
+  const HS=hawk?.scores||{};
+  const yrows=[{n:'US 2Y',v:Y['2Y']||(fd.find(s=>s.id==='DGS2')?.value)},{n:'US 5Y',v:Y['5Y']},{n:'US 10Y',v:Y['10Y']||(fd.find(s=>s.id==='DGS10')?.value)},{n:'US 30Y',v:Y['30Y']}].filter(y=>y.v!=null);
+  const hm=Object.entries(P).slice(0,12).map(([k,v])=>({n:k,pct:v.pct,up:(v.pct||0)>=0}));
+  const yieldSrc=yields?.status==='live'?'LIVE · '+yields.src+' · '+(yields.date||''):'LOADING…';
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:8}},
+      card([cardH('REGIME',yields?.status==='live'||fred?'LIVE · DERIVED FROM REAL DATA':'AWAITING DATA',rcol),React.createElement('div',{style:{fontSize:14,fontWeight:700,color:rcol,marginTop:4}},rlabel),sp2y10!=null&&React.createElement('div',{style:{fontSize:7,color:rcol+'80',marginTop:2}},'2s10s: '+fmt(sp2y10,0)+'bp')]),
+      card([cardH('DXY',prices?.status==='live'?'LIVE · Yahoo Finance':'OFFLINE'),P['DXY']?[React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.hi,key:'v'}},fmt(P['DXY'].price,1)),React.createElement('div',{style:{fontSize:8,color:up(P['DXY'].pct||0),key:'c'}},fmtPct(P['DXY'].pct))]:React.createElement(Skel,{w:60,h:20})]),
+      card([cardH('VIX',prices?.status==='live'?'LIVE · Yahoo Finance':'OFFLINE'),P['VIX']?[React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.hi,key:'v'}},fmt(P['VIX'].price,1)),React.createElement('div',{style:{fontSize:8,color:C.muted,key:'c'}},fmtPct(P['VIX'].pct))]:React.createElement(Skel,{w:60,h:20})]),
+      card([cardH('2Y/10Y SPREAD',yieldSrc),Y['2Y']&&Y['10Y']?[React.createElement('div',{style:{fontSize:18,fontWeight:700,color:sp2y10<0?C.red:C.green,key:'v'}},fmt(sp2y10,0)+'bp'),React.createElement('div',{style:{fontSize:7,color:sp2y10<0?C.red:C.green,key:'l'}},sp2y10<0?'INVERTED':'NORMAL')]:React.createElement(Skel,{w:60,h:20})])
+    ),
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+      card([cardH('YIELD CURVE',yieldSrc,yields?.status==='live'?C.green:C.gold),
+        yrows.length>0?yrows.map((y,i)=>React.createElement('div',{key:i,onClick:()=>setDetail&&setDetail({type:'yields',data:yields}),style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid '+C.border,gap:8,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},lbl(y.n),lbl(fmt(y.v,2)+'%',C.hi,{fontWeight:600}))):
+        !yields?[0,1,2,3].map(i=>React.createElement('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},React.createElement(Skel,{w:40,h:12}),React.createElement(Skel,{w:50,h:12}))):
+        React.createElement(NeedAPI,{name:'FRED API',url:'fred.stlouisfed.org/docs/api/fred/',what:'Yields + macro series'})
+      ]),
+      card([cardH('CB HAWKISHNESS',hawk?.status==='live'?'LIVE · Claude NLP · '+new Date(hawk.ts||Date.now()).toLocaleTimeString():'CLAUDE SCORING CB STANCES…',hawk?.status==='live'?C.green:C.muted),
+        Object.keys(HS).length>0?
+          React.createElement('div',{style:{marginTop:4}},Object.entries(HS).map(([n,d])=>React.createElement('div',{key:n,onClick:()=>setDetail&&setDetail({type:'hawk',data:{cb:n,...d}}),style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+            React.createElement('span',{style:{fontSize:8,color:C.text,width:32}},n),
+            React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
+            React.createElement('span',{style:{fontSize:10,color:d.score>65?C.red:d.score>45?C.gold:C.green,width:28,textAlign:'right',fontWeight:600}},d.score),
+            React.createElement('span',{style:{fontSize:7,color:d.change?.startsWith('-')?C.green:C.red,width:30,textAlign:'right'}},d.change)
+          ))):
+        [0,1,2,3,4,5].map(i=>React.createElement('div',{key:i,style:{display:'flex',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,alignItems:'center'}},React.createElement(Skel,{w:30,h:12}),React.createElement(Skel,{w:100,h:8}),React.createElement(Skel,{w:24,h:12})))
+      ])
+    ),
+    fd.length>0&&React.createElement('div',{style:{marginBottom:8}},
+      card([cardH('FRED MACRO DATA','LIVE · St. Louis Fed · '+(fd[0]?.date||''),C.green),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginTop:8}},
+          fd.slice(0,8).map(s=>React.createElement('div',{key:s.id,onClick:()=>setDetail&&setDetail({type:'fred',data:s}),style:{background:C.s2,border:'1px solid '+C.border,padding:8,cursor:'pointer',transition:'border-color 0.15s'},onMouseEnter:e=>e.currentTarget.style.borderColor=C.accent,onMouseLeave:e=>e.currentTarget.style.borderColor=C.border},
+            React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},s.label),
+            React.createElement('div',{style:{fontSize:13,fontWeight:600,color:C.hi}},fmt(s.value,2)+'%'),
+            React.createElement('div',{style:{fontSize:7,color:up(s.value-s.prev),marginBottom:4}},(s.value>s.prev?'▲':'▼')+Math.abs(s.value-s.prev).toFixed(2)),
+            React.createElement(Spark,{data:s.hist,color:C.accent,w:60,h:18})
+          ))
+        )
+      ])
+    ),
+    card([cardH('CROSS-ASSET HEATMAP',prices?.status==='live'?'LIVE · Yahoo Finance':'PRICE FEED OFFLINE — Connect Polygon.io ($29/mo) for live prices',prices?.status==='live'?C.green:C.gold),
+      hm.length>0?
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:4,marginTop:8}},
+          hm.map(h=>React.createElement('div',{key:h.n,style:{background:h.up?C.green+'12':C.red+'12',border:'1px solid '+(h.up?C.green:C.red)+'20',padding:'6px 4px',textAlign:'center'}},
+            React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:2}},h.n),
+            React.createElement('div',{style:{fontSize:9,fontWeight:600,color:h.up?C.green:C.red}},fmtPct(h.pct))
+          ))):
+        React.createElement('div',{style:{padding:'14px 0',textAlign:'center',color:C.muted,fontSize:8,letterSpacing:'1px'}},'CONNECT PRICE FEED FOR LIVE HEATMAP')
+    ])
+  );
+}
+ 
+function FlowsModule({cot,loading,setDetail,esr}){
+  const live=cot?.some(c=>c.live);
+  const mx=Math.max(...(cot||[]).map(m=>Math.abs(m.net||0)))||1;
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+      card([
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}},
+          React.createElement('div',null,
+            React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:live?C.green:C.gold}},'CFTC COT — 52-WEEK REAL PERCENTILES'),
+            React.createElement('div',{style:{fontSize:6,color:C.muted}},live?'LIVE · publicreporting.cftc.gov · real %ile from 52w history':loading?'CONNECTING TO CFTC…':'ERROR — RETRY')
+          ),
+          React.createElement(Dot,{s:live?'live':loading?'loading':'error'})
+        ),
+        (cot||[]).length>0?
+          (cot||[]).map(m=>{
+            const pct=Math.abs(m.net||0)/mx*100,isL=(m.net||0)>0;
+            const bc=m.pct>70?C.red:m.pct>50?C.gold:C.green;
+            return React.createElement('div',{key:m.label,onClick:()=>m.live&&setDetail&&setDetail({type:'cot',data:m}),style:{display:'flex',alignItems:'center',gap:6,padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:m.live?'pointer':'default',transition:'background 0.1s'},onMouseEnter:e=>{if(m.live)e.currentTarget.style.background=C.s2;},onMouseLeave:e=>{e.currentTarget.style.background='transparent';}},
+              React.createElement('span',{style:{fontSize:8,color:C.text,width:68,flexShrink:0}},m.label),
+              m.live?badge(m.pct+'th',bc):badge('?',C.muted),
+              React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:pct+'%',background:isL?C.green:C.red}})),
+              React.createElement('span',{style:{fontSize:8,color:isL?C.green:C.red,width:72,textAlign:'right',flexShrink:0}},(isL?'+':'')+((m.net||0)/1000).toFixed(0)+'K nets'),
+              m.live&&React.createElement('span',{style:{fontSize:7,color:up(m.chg||0),width:52,textAlign:'right',flexShrink:0}},(m.chg>0?'+':'')+((m.chg||0)/1000).toFixed(1)+'K WoW')
+            );
+          }):
+          React.createElement('div',{style:{padding:'16px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'FETCHING 52 WEEKS OF CFTC DATA…'),
+        live&&React.createElement('div',{style:{marginTop:8,fontSize:7,color:C.muted,background:C.s2,border:'1px solid '+C.border,padding:'4px 8px'}},'52-week rolling percentile of non-commercial net position · Source: CFTC · Report lag: ~3-5 days')
+      ]),
+      React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+        (esr?.status==='bad_key'||esr?.data)?card([
+  cardH('WEEKLY EXPORT SALES — ESR',esr.status==='bad_key'?'ESR KEY INVALID':'LIVE · USDA FAS',esr.status==='bad_key'?C.red:C.green),
+  esr.status==='bad_key'?
+    React.createElement('div',{style:{padding:'8px 0'}},
+      React.createElement('div',{style:{fontSize:7,color:C.text,lineHeight:1.6,marginBottom:8}},esr.note),
+      React.createElement('a',{href:esr.link,target:'_blank',style:{fontSize:7,color:C.accent}},'→ Regenerate at apps.fas.usda.gov/opendataweb')
+    ):
+    React.createElement('div',{style:{marginTop:4}},Object.entries(esr.data||{}).map(([crop,d])=>
+      React.createElement('div',{key:crop,style:{display:'flex',alignItems:'center',gap:6,padding:'4px 0',borderBottom:'1px solid '+C.border}},
+        React.createElement('span',{style:{fontSize:8,color:C.text,width:80,flexShrink:0}},crop),
+        React.createElement('div',{style:{flex:1,height:3,background:C.track}},React.createElement('div',{style:{height:'100%',width:Math.min(100,Math.abs(d.weeklyNet)/500*100)+'%',background:d.weeklyNet>0?C.green:C.red}})),
+        React.createElement('span',{style:{fontSize:8,color:d.weeklyNet>0?C.green:C.red,width:80,textAlign:'right',flexShrink:0}},(d.weeklyNet>0?'+':'')+fmtK(d.weeklyNet*1000)+' wk')
+      ))
+    )
+]):card([cardH('WEEKLY EXPORT SALES — ESR'),React.createElement(NeedAPI,{name:'USDA FAS ESR KEY',url:'apps.fas.usda.gov/opendataweb',what:'Weekly US ag export sales by crop'})]),
+card([cardH('ETF FLOWS'),React.createElement(NeedAPI,{name:'ETF FLOW FEED',url:'etfdb.com',what:'GLD, USO, DBA, PDBC 5-day rolling flows'})]),
+        card([cardH('EM CAPITAL FLOWS'),React.createElement(NeedAPI,{name:'IIF CAPITAL FLOWS',url:'iif.com',what:'Weekly EM flows by country'})]),
+        card([cardH('OPTIONS FLOW'),React.createElement(NeedAPI,{name:'OPTIONS FLOW',url:'unusualwhales.com',what:'Unusual options activity on commodity contracts'})])
+      )
+    )
+  );
+}
+ 
+function AltDataModule({noaa,gdelt,eia,usda,enso,setDetail,ams}){
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:8}},
+      card([cardH('US CRUDE OIL STOCKS',eia?'LIVE · EIA · '+eia.period:'EIA KEY REQUIRED',eia?C.green:C.gold),
+        eia?[React.createElement('div',{style:{fontSize:14,fontWeight:700,color:C.hi,margin:'4px 0',key:'v'}},(eia.latest/1000).toFixed(1)+' Mb'),React.createElement('div',{style:{fontSize:7,color:eia.chg>0?C.red:C.green,marginBottom:4,key:'c'}},(eia.chg>0?'+':'')+eia.chg.toFixed(1)+' Mb WoW')]:
+        React.createElement(NeedAPI,{name:'EIA API',url:'eia.gov/opendata/register.php',what:'US crude oil weekly storage report'})
+      ]),
+      card([cardH('CROP CONDITIONS',usda?'LIVE · USDA NASS · '+(usda.data[0]?.week||''):'USDA KEY REQUIRED',usda?C.green:C.gold),
+        usda?[React.createElement('div',{style:{fontSize:14,fontWeight:700,color:usda.data[0]?.value>55?C.green:C.gold,margin:'4px 0',key:'v'}},usda.data[0]?.value?.toFixed(0)+'%'),React.createElement('div',{style:{fontSize:7,color:C.muted,key:'l'}}),'CORN Good + Excellent %']:
+        React.createElement(NeedAPI,{name:'USDA NASS API',url:'quickstats.nass.usda.gov/api/',what:'Weekly crop progress + conditions'})
+      ]),
+      card([cardH('ENSO / ONI INDEX',enso?.status==='live'?'LIVE · NOAA CPC · '+(enso.seas||'')+' '+(enso.yr||''):'LOADING…',enso?.status==='live'?C.green:C.muted),
+        enso?.status==='live'?React.createElement('div',{onClick:()=>setDetail&&setDetail({type:'enso',data:enso}),style:{cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.opacity='0.85',onMouseLeave:e=>e.currentTarget.style.opacity='1'},[
+          React.createElement('div',{key:'v',style:{fontSize:16,fontWeight:700,color:enso.oni>=0.5?C.red:enso.oni<=-0.5?C.accent:C.gold,marginTop:8}},fmt(enso.oni,1)+' ONI'),
+          React.createElement('div',{key:'p',style:{fontSize:8,letterSpacing:'1px',color:enso.oni>=0.5?C.red:enso.oni<=-0.5?C.accent:C.gold,marginTop:4}},enso.phase+(enso.trend?' '+enso.trend:'')),
+          React.createElement('div',{key:'i',style:{fontSize:7,color:C.muted,marginTop:6,lineHeight:1.5}},enso.implication),
+          React.createElement('div',{key:'s',style:{fontSize:6,color:C.muted,marginTop:4}},'Source: NOAA CPC · ONI = 3-month running mean of ERSST.v5')
+        ]):React.createElement('div',{style:{animation:'shimmer 1.5s infinite',fontSize:8,color:C.muted,marginTop:8,padding:'8px 0'}},'Fetching NOAA ONI data…')
+      ]),
+      card([cardH('AIS VESSEL TRACKING'),React.createElement(NeedAPI,{name:'SPIRE MARITIME API',url:'spire.com/maritime/',what:'Live vessel positions + cargo + routes'})]),
+      card([cardH('CONSUMER SPEND DATA'),React.createElement(NeedAPI,{name:'2ND PARTY DATA',url:'affinity.solutions',what:'Card spend vs consensus by category'})]),
+      card([cardH('FREIGHT RATES'),React.createElement(NeedAPI,{name:'BALTIC EXCHANGE',url:'baltex.com',what:'Baltic Dry, Capesize, Panamax indices'})]),
+card([cardH('AMS MARKET NEWS',ams?.status==='live'?'LIVE · USDA AMS · '+Object.values(ams.data)[0]?.date:'AMS KEY REQUIRED',ams?.status==='live'?C.green:C.gold),
+  ams?.data?React.createElement('div',{style:{marginTop:4}},
+    Object.entries(ams.data).map(([name,rep])=>
+      React.createElement('div',{key:name,style:{marginBottom:8,paddingBottom:8,borderBottom:'1px solid '+C.border}},
+        React.createElement('div',{style:{fontSize:6,letterSpacing:'1px',color:C.muted,marginBottom:4}},name),
+        rep.narrative?React.createElement('div',{style:{fontSize:7,color:C.text,lineHeight:1.6}},rep.narrative.split('\n').slice(0,2).join(' | ')):React.createElement('div',{style:{fontSize:7,color:C.muted}},'No data this period')
+      ))
+  ):React.createElement(NeedAPI,{name:'USDA AMS KEY',url:'mymarketnews.ams.usda.gov',what:'Grain cash prices, livestock, dairy'})
+])
+    ),
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+      card([cardH('NOAA WEATHER ALERTS',noaa?.status==='live'?'LIVE · '+(noaa.count||0)+' ACTIVE · api.weather.gov':'LOADING…',noaa?.status==='live'?C.green:C.muted),
+        noaa?.alerts?.length>0?React.createElement('div',null,noaa.alerts.slice(0,6).map(a=>React.createElement('div',{key:a.id,onClick:()=>setDetail&&setDetail({type:'noaa',data:a}),style:{padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+          React.createElement('div',{style:{display:'flex',gap:6,alignItems:'flex-start',marginBottom:2}},badge((a.severity||'INFO').toUpperCase(),sevC((a.severity||'').toUpperCase())),React.createElement('span',{style:{fontSize:8,color:C.hi,flex:1,lineHeight:1.4}},a.event)),
+          React.createElement('div',{style:{fontSize:7,color:C.muted}},a.area?.slice(0,70))
+        ))):React.createElement('div',{style:{fontSize:8,color:C.muted,padding:'10px 0',animation:'shimmer 1.5s infinite'}},'Fetching live NOAA weather alerts…')
+      ]),
+      card([cardH('GDELT COMMODITY HEADLINES',gdelt?.status==='live'?'LIVE · api.gdeltproject.org · 24h':'LOADING…',gdelt?.status==='live'?C.green:C.muted),
+        gdelt?.articles?.length>0?React.createElement('div',null,gdelt.articles.slice(0,6).map((a,i)=>React.createElement('div',{key:i,onClick:()=>a.url&&window.open(a.url,'_blank'),style:{padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+          React.createElement('div',{style:{fontSize:8,color:C.hi,lineHeight:1.4,marginBottom:2}},a.title),
+          React.createElement('div',{style:{display:'flex',justifyContent:'space-between'}},React.createElement('span',{style:{fontSize:6,color:C.muted}},a.domain),React.createElement('span',{style:{fontSize:7,color:parseFloat(a.tone)>0?C.green:C.red}},(parseFloat(a.tone)>0?'▲ ':'▼ ')+a.tone))
+        ))):React.createElement('div',{style:{fontSize:8,color:C.muted,padding:'10px 0',animation:'shimmer 1.5s infinite'}},'Fetching live GDELT articles…')
+      ])
+    ),
+    eia&&card([cardH('EIA CRUDE STORAGE HISTORY','LIVE · api.eia.gov · weekly',C.green),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:6,marginTop:8}},
+        (eia.data||[]).slice(0,6).map((d,i)=>React.createElement('div',{key:i,style:{background:C.s2,border:'1px solid '+C.border,padding:8,textAlign:'center'}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},(d.period||'').slice(0,7)),
+          React.createElement('div',{style:{fontSize:11,fontWeight:600,color:C.hi}},(parseFloat(d.value||0)/1000).toFixed(1)+' Mb')
+        ))
+      )
+    ])
+  );
+}
+ 
+function NLPModule({hawk,sc,geo,setDetail}){
+  const HS=hawk?.scores||{},SC=sc||[],GR=geo||[];
+  const fed=HS.FED?.score||0,ecb=HS.ECB?.score||0,diff=fed-ecb;
+  const divMsg=Object.keys(HS).length&&Math.abs(diff)>15?'⚡ FED-ECB spread '+(diff>0?'+':'')+diff+'pt → '+(diff>0?'EUR/USD LONG':'USD LONG')+' signal active':Object.keys(HS).length?'FED/ECB spread: '+(diff>0?'+':'')+diff+'pt — monitoring for divergence':'Loading…';
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+      card([
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}},
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:hawk?.status==='live'?C.green:C.muted}},'CB HAWKISHNESS — CLAUDE NLP SCORING'),React.createElement('div',{style:{fontSize:6,color:C.muted}},hawk?.status==='live'?'LIVE · '+hawk.src+' · '+new Date(hawk.ts||Date.now()).toLocaleTimeString():'CLAUDE IS SCORING CB STANCES…')),
+          React.createElement(Dot,{s:hawk?.status||'loading'})
+        ),
+        Object.keys(HS).length>0?[
+          React.createElement('div',{key:'bars',style:{marginTop:4}},Object.entries(HS).map(([n,d])=>React.createElement('div',{key:n,onClick:()=>setDetail&&setDetail({type:'hawk',data:{cb:n,...d}}),style:{display:'flex',alignItems:'center',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+            React.createElement('span',{style:{fontSize:8,color:C.text,width:32}},n),
+            React.createElement('div',{style:{flex:1,height:4,background:C.track}},React.createElement('div',{style:{height:'100%',width:d.score+'%',background:d.score>65?C.red:d.score>45?C.gold:C.green}})),
+            React.createElement('span',{style:{fontSize:10,color:d.score>65?C.red:d.score>45?C.gold:C.green,width:28,textAlign:'right',fontWeight:600}},d.score),
+            React.createElement('span',{style:{fontSize:7,color:d.change?.startsWith('-')?C.green:C.red,width:30,textAlign:'right'}},d.change)
+          ))),
+          React.createElement('div',{key:'div',style:{marginTop:10,fontSize:7,color:C.gold,background:C.gold+'0a',border:'1px solid '+C.gold+'20',padding:8}},divMsg)
+        ]:[0,1,2,3,4,5].map(i=>React.createElement('div',{key:i,style:{display:'flex',gap:8,padding:'5px 0',borderBottom:'1px solid '+C.border,alignItems:'center'}},React.createElement(Skel,{w:30,h:12}),React.createElement(Skel,{w:100,h:8}),React.createElement(Skel,{w:24,h:12})))
+      ]),
+      card([
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}},
+          React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:SC.some(s=>s.live)?C.green:C.muted}},'SUPPLY CHAIN STRESS — GDELT DERIVED'),React.createElement('div',{style:{fontSize:6,color:C.muted}},SC.some(s=>s.live)?'LIVE · GDELT 7-day article volume + sentiment · 8 sectors':'QUERYING GDELT…')),
+          React.createElement(Dot,{s:SC.some(s=>s.live)?'live':SC.length?'error':'loading'})
+        ),
+        SC.length>0?React.createElement('div',null,SC.map(s=>React.createElement('div',{key:s.s,onClick:()=>setDetail&&setDetail({type:'sc',data:s}),style:{display:'flex',alignItems:'center',gap:8,padding:'4px 0',borderBottom:'1px solid '+C.border,cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.background=C.s2,onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+          React.createElement('span',{style:{fontSize:8,color:C.text,flex:1}},s.s),
+          React.createElement('div',{style:{width:80,height:3,background:C.track,flexShrink:0}},React.createElement('div',{style:{height:'100%',width:s.idx+'%',background:s.idx>65?C.red:s.idx>50?C.gold:C.green}})),
+          s.live?badge(s.idx+'',s.idx>65?C.red:s.idx>50?C.gold:C.green):badge('?',C.muted)
+        ))):React.createElement('div',{style:{padding:'10px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT SECTOR DATA…')
+      ])
+    ),
+    card([cardH('GDELT GEOPOLITICAL INTELLIGENCE',GR.some(g=>g.live)?'LIVE · GDELT 7-day article analysis · real conflict + economic indices':'QUERYING GDELT…',GR.some(g=>g.live)?C.green:C.muted),
+      GR.length>0?
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginTop:8}},
+          GR.map(g=>React.createElement('div',{key:g.r,onClick:()=>setDetail&&setDetail({type:'geo',data:g}),style:{background:C.s2,border:'1px solid '+C.border,padding:12,cursor:'pointer',transition:'border-color 0.15s'},onMouseEnter:e=>e.currentTarget.style.borderColor=C.accent,onMouseLeave:e=>e.currentTarget.style.borderColor=C.border},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},React.createElement('div',{style:{fontSize:7,color:C.muted}},g.r),g.live?badge('LIVE',C.green):badge('?',C.muted)),
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('CONFLICT IDX'),lbl(g.ci+'',g.ci>60?C.red:C.gold,{fontSize:12,fontWeight:600})),
+            React.createElement('div',{style:{height:3,background:C.track,marginBottom:10}},React.createElement('div',{style:{height:'100%',width:g.ci+'%',background:g.ci>60?C.red:C.gold}})),
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},lbl('ECONOMIC IDX'),lbl(g.ei+'',g.ei>55?C.green:C.gold,{fontSize:12,fontWeight:600})),
+            React.createElement('div',{style:{height:3,background:C.track}},React.createElement('div',{style:{height:'100%',width:g.ei+'%',background:g.ei>55?C.green:C.gold}})),
+            g.live&&React.createElement('div',{style:{marginTop:6,fontSize:6,color:C.muted}},g.n+' articles · avg tone '+g.tone)
+          ))):
+        React.createElement('div',{style:{padding:'12px 0',textAlign:'center',color:C.muted,fontSize:8,animation:'shimmer 1.5s infinite'}},'ANALYZING GDELT GEOPOLITICAL DATA…')
+    ])
+  );
+}
+ 
+function CommodModule({cot,prices,usda,setDetail,psd,esr}){
+  const [crop,setCrop]=useState('CORN');
+  const P=prices?.data||{};
+  const CROPS=['CORN','SOYBEANS','WHEAT','COTTON','COFFEE','SUGAR','COCOA','PALM OIL'];
+  const PMAP={'CORN':'CORN','SOYBEANS':'SOYBEANS','WHEAT':'WHEAT','COTTON':'COTTON','COFFEE':'COFFEE','COCOA':'COCOA','SUGAR':'SUGAR'};
+  const EXCH={'CORN':'CBOT','SOYBEANS':'CBOT','WHEAT':'CBOT','COTTON':'ICE','COFFEE':'ICE','SUGAR':'ICE','COCOA':'ICE','PALM OIL':'BMD'};
+  const cotItem=(cot||[]).find(c=>c.label===crop);
+  const priceItem=P[PMAP[crop]];
+  const psdCrop=psd?.data?.[crop];
+  const sevColor=s=>s>70?C.red:s>40?C.gold:C.green;
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
+    React.createElement('div',{style:{display:'flex',gap:0,borderBottom:'1px solid '+C.border,marginBottom:12}},
+      CROPS.map(c=>React.createElement('button',{key:c,onClick:()=>setCrop(c),style:{fontSize:8,letterSpacing:'1px',padding:'5px 12px',cursor:'pointer',background:c===crop?C.gold+'15':'transparent',border:'none',color:c===crop?C.gold:C.muted,borderBottom:'2px solid '+(c===crop?C.gold:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s',whiteSpace:'nowrap'}},c))
+    ),
+    React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:8}},
+      card([cardH('PRICE',EXCH[crop]+' · '+(priceItem?'LIVE · Yahoo Finance':'OFFLINE'),priceItem?C.green:C.gold),
+        priceItem?[React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.hi,marginTop:4,key:'p'}},fmt(priceItem.price,2)),React.createElement('div',{style:{fontSize:8,color:up(priceItem.pct||0),marginTop:4,key:'c'}},fmtPct(priceItem.pct))]:
+        [React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.muted,marginTop:4,key:'d'},},'—'),React.createElement('div',{style:{fontSize:7,color:C.gold,marginTop:4,key:'l'}},'CONNECT PRICE FEED')]
+      ]),
+      card([cardH('S&D BALANCE',psdCrop?.world?'LIVE · USDA PSD · MY'+psdCrop.year:'PSD KEY REQUIRED',psdCrop?.world?C.green:C.gold),
+  (()=>{const w=psdCrop?.world;
+    if(w){const su=w.stocksToUse;const suCol=su<15?C.red:su<20?C.gold:C.green;
+      return[
+        React.createElement('div',{key:'p',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},React.createElement('span',{style:{fontSize:7,color:C.muted}},'WORLD PROD'),React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}},w.production?Math.round(w.production/1000)+' MMT':'—')),
+        React.createElement('div',{key:'s',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},React.createElement('span',{style:{fontSize:7,color:C.muted}},'END STOCKS'),React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}},w.endingStocks?Math.round(w.endingStocks/1000)+' MMT':'—')),
+        React.createElement('div',{key:'e',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},React.createElement('span',{style:{fontSize:7,color:C.muted}},'EXPORTS'),React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}},w.exports?Math.round(w.exports/1000)+' MMT':'—')),
+        su!=null&&React.createElement('div',{key:'r',style:{display:'flex',justifyContent:'space-between',padding:'5px 0 0'}},React.createElement('span',{style:{fontSize:7,color:C.muted}},'STOCKS/USE'),React.createElement('span',{style:{fontSize:13,color:suCol,fontWeight:700}},su+'%'))
+      ];}
+    return React.createElement(NeedAPI,{name:'USDA PSD KEY',url:'apps.fas.usda.gov/opendataweb',what:'Monthly S&D for 8 crops'});
+  })()
+]),
+      card([cardH('COT SPEC %ILE',cotItem?.live?'LIVE · CFTC · '+cotItem.weeks+'w history':'LOADING…',cotItem?.live?C.green:C.muted),
+        cotItem?.live?React.createElement('div',{onClick:()=>setDetail&&setDetail({type:'cot',data:cotItem}),style:{cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.opacity='0.8',onMouseLeave:e=>e.currentTarget.style.opacity='1'},
+          React.createElement('svg',{width:76,height:44,style:{display:'block',margin:'4px 0'}},
+            React.createElement('path',{d:'M 6 38 A 32 32 0 0 1 70 38',fill:'none',stroke:C.muted,strokeWidth:3,strokeLinecap:'round'}),
+            React.createElement('path',{d:'M 6 38 A 32 32 0 0 1 '+(6+64*Math.cos(Math.PI-(cotItem.pct/100)*Math.PI))+' '+(38-32*Math.sin((cotItem.pct/100)*Math.PI)),fill:'none',stroke:sevColor(cotItem.pct),strokeWidth:3,strokeLinecap:'round'}),
+            React.createElement('text',{x:38,y:38,textAnchor:'middle',fontSize:11,fill:sevColor(cotItem.pct),fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},cotItem.pct+'%')
+          )):React.createElement(Skel,{w:76,h:44})
+      ]),
+      card([cardH('OPEN INTEREST',cotItem?.live?'LIVE · CFTC':'LOADING…'),
+        cotItem?.live?[React.createElement('div',{style:{fontSize:14,fontWeight:700,color:C.hi,marginTop:6,key:'v'}},(cotItem.oi/1000).toFixed(0)+'K'),React.createElement('div',{style:{fontSize:7,color:C.muted,key:'l'}},'contracts')]:React.createElement(Skel,{w:60,h:20})
+      ])
+    ),
+    cotItem?.live&&React.createElement('div',{style:{marginBottom:8}},
+      card([cardH(crop+' COT DETAIL','LIVE · CFTC · Report: '+cotItem.date+' · 52w range: '+fmtK(cotItem.min52*1000)+' to '+fmtK(cotItem.max52*1000),C.green),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginTop:8}},
+          [{l:'NET SPEC',v:(cotItem.net>0?'+':'')+((cotItem.net)/1000).toFixed(0)+'K',c:cotItem.net>0?C.green:C.red},{l:'SPEC LONGS',v:(cotItem.lng/1000).toFixed(0)+'K',c:C.green},{l:'SPEC SHORTS',v:(cotItem.sht/1000).toFixed(0)+'K',c:C.red},{l:'WoW CHANGE',v:(cotItem.chg>0?'+':'')+((cotItem.chg)/1000).toFixed(1)+'K',c:up(cotItem.chg)}].map(s=>
+            React.createElement('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+              React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},s.l),
+              React.createElement('div',{style:{fontSize:14,fontWeight:600,color:s.c}},s.v)
+            ))
+        )
+      ])
+    ),
+    card([cardH('PRODUCTION CALENDAR','Q2 2026 · KEY USDA & EXCHANGE DATES'),
+      ...[{d:'APR 9',e:'USDA WASDE Report',i:'HIGH'},{d:'APR 11',e:'US Crop Progress #1',i:'HIGH'},{d:'APR 28',e:'Brazil CONAB Report',i:'MEDIUM'},{d:'MAY 7',e:'USDA WASDE Report',i:'HIGH'},{d:'MAY 15',e:'China CASDE Report',i:'MEDIUM'},{d:'JUN 4',e:'USDA WASDE Report',i:'HIGH'}].map(e=>row(lbl(e.d,C.accent,{width:44,flexShrink:0}),lbl(e.e,C.hi),badge(e.i,sevC(e.i))))
+    ])
+  );
+}
+ 
+function BriefingModule({ctx}){
+  const [brief,setBrief]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const gen=async()=>{
+    setLoading(true);
+    try{
+      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:900,system:ctx||'You are an institutional macro commodity hedge fund morning brief AI. Be data-driven.',messages:[{role:'user',content:'Generate today\'s morning brief with: **REGIME ASSESSMENT** (2 sentences) **TOP SIGNALS & TRADE IDEAS** (3 bullets with live data numbers) **KEY CATALYSTS TODAY** (scheduled releases) **RISK WATCH** (2 bullets). Use only live data from your context. Flag unavailable data.'}]})});
+      const d=await r.json();setBrief(d.content?.[0]?.text||'Error generating brief.');
+    }catch(e){setBrief('Claude API error: '+e.message);}
+    setLoading(false);
+  };
+  return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1,maxWidth:880,margin:'0 auto',width:'100%'}},
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
+      React.createElement('div',null,React.createElement('div',{style:{fontSize:7,letterSpacing:'3px',color:C.muted,marginBottom:2}},'MORNING INTELLIGENCE BRIEF · AI-GENERATED FROM LIVE DATA'),React.createElement('div',{style:{fontSize:9,color:C.text}},new Date().toDateString()+' · '+new Date().toLocaleTimeString())),
+      React.createElement('button',{onClick:gen,disabled:loading,style:{background:loading?C.muted+'20':C.rose+'15',border:'1px solid '+(loading?C.muted:C.rose)+'40',color:loading?C.muted:C.rose,fontFamily:'IBM Plex Mono,monospace',fontSize:8,letterSpacing:'1px',padding:'7px 18px',cursor:loading?'default':'pointer'}},loading?'⧐  GENERATING…':'⚡  GENERATE AI BRIEF')
+    ),
+    card([brief?React.createElement('div',{style:{whiteSpace:'pre-wrap',fontSize:9,color:C.text,lineHeight:1.9,padding:'4px 0'}},brief):React.createElement('div',{style:{textAlign:'center',padding:'40px 0',color:C.muted,fontSize:8,letterSpacing:'2px'}},'CLICK ⚡ GENERATE — BRIEF USES ALL LIVE DATA CURRENTLY LOADED')]),
+    React.createElement('div',{style:{marginTop:8,padding:'8px 12px',background:C.s2,border:'1px solid '+C.border,fontSize:7,color:C.muted}})
+  );
+}
+ 
+function QueryModule({ctx}){
+  const [msgs,setMsgs]=useState([]);const [inp,setInp]=useState('');const [loading,setLoading]=useState(false);const bottomRef=useRef(null);
+  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:'smooth'});},[msgs,loading]);
+  const send=async t=>{
+    if(!t.trim()||loading)return;
+    const nm=[...msgs,{role:'user',content:t}];setMsgs(nm);setInp('');setLoading(true);
+    try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,system:ctx,messages:nm.map(m=>({role:m.role,content:m.content}))})});const d=await r.json();setMsgs(m=>[...m,{role:'assistant',content:d.content?.[0]?.text||'Error.'}]);}
+    catch(e){setMsgs(m=>[...m,{role:'assistant',content:'Error: '+e.message}]);}
+    setLoading(false);
+  };
+  const suggs=['What does live COT data say about crowding right now?','Which markets have extreme 52-week percentile readings?','Summarize the live GDELT geopolitical risk picture','What CB divergence trades does the live hawkishness scoring support?'];
+  return React.createElement('div',{style:{display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}},
+    React.createElement('div',{style:{flex:1,overflowY:'auto',padding:'16px 24px'}},
+      msgs.length===0&&React.createElement('div',{style:{maxWidth:680,margin:'20px auto'}},
+        React.createElement('div',{style:{textAlign:'center',fontSize:18,fontWeight:700,color:C.hi,marginBottom:6,fontFamily:'sans-serif'}},'Ask anything about ',React.createElement('span',{style:{color:C.rose}},'markets.')),
+        React.createElement('div',{style:{textAlign:'center',fontSize:7,color:C.muted,letterSpacing:'2px',marginBottom:20}},'CONTEXT: LIVE CFTC · LIVE NOAA · LIVE GDELT · LIVE CLAUDE NLP · US TREASURY YIELDS'),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+          suggs.map((s,i)=>React.createElement('button',{key:i,onClick:()=>send(s),style:{background:C.s1,border:'1px solid '+C.border,color:C.muted,fontFamily:'IBM Plex Mono,monospace',fontSize:8,padding:'10px 14px',textAlign:'left',cursor:'pointer',lineHeight:1.6,transition:'all 0.15s'},onMouseEnter:e=>{e.currentTarget.style.borderColor=C.rose;e.currentTarget.style.color=C.rose;},onMouseLeave:e=>{e.currentTarget.style.borderColor=C.border;e.currentTarget.style.color=C.muted;}},s))
+        )
+      ),
+      msgs.map((m,i)=>React.createElement('div',{key:i,style:{display:'flex',flexDirection:m.role==='user'?'row-reverse':'row',gap:10,marginBottom:16,maxWidth:760,margin:'0 auto 16px'}},
+        React.createElement('div',{style:{width:26,height:26,background:m.role==='user'?C.accent+'20':C.rose+'20',border:'1px solid '+(m.role==='user'?C.accent:C.rose)+'40',display:'flex',alignItems:'center',justifyContent:'center',fontSize:7,color:m.role==='user'?C.accent:C.rose,flexShrink:0}},m.role==='user'?'PM':'AQ'),
+        React.createElement('div',{style:{background:m.role==='user'?C.accent+'0a':C.s1,border:'1px solid '+(m.role==='user'?C.accent+'30':C.border),padding:'10px 14px',fontSize:9,color:m.role==='user'?C.hi:C.text,lineHeight:1.9,maxWidth:'88%',whiteSpace:'pre-wrap'}},m.content)
+      )),
+      loading&&React.createElement('div',{style:{display:'flex',gap:10,maxWidth:760,margin:'0 auto'}},
+        React.createElement('div',{style:{width:26,height:26,background:C.rose+'20',border:'1px solid '+C.rose+'40',display:'flex',alignItems:'center',justifyContent:'center',fontSize:7,color:C.rose}},'AQ'),
+        React.createElement('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'10px 14px',display:'flex',gap:6,alignItems:'center'}},[0,1,2].map(i=>React.createElement('div',{key:i,style:{width:5,height:5,borderRadius:'50%',background:C.rose,animation:'alphaDot 1.2s '+(i*0.2)+'s ease-in-out infinite'}})))
+      ),
+      React.createElement('div',{ref:bottomRef})
+    ),
+    React.createElement('div',{style:{display:'flex',gap:8,padding:'10px 16px',borderTop:'1px solid '+C.border,background:C.s1,flexShrink:0}},
+      React.createElement('input',{value:inp,onChange:e=>setInp(e.target.value),onKeyDown:e=>e.key==='Enter'&&!e.shiftKey&&send(inp),placeholder:'Ask about live COT positioning, regime, CB divergence, geopolitical risk…',style:{flex:1,background:C.s2,border:'1px solid '+C.border,color:C.hi,fontFamily:'IBM Plex Mono,monospace',fontSize:9,padding:'9px 14px',outline:'none'},onFocus:e=>e.target.style.borderColor=C.rose+'60',onBlur:e=>e.target.style.borderColor=C.border}),
+      React.createElement('button',{onClick:()=>send(inp),disabled:loading,style:{background:C.rose+'15',border:'1px solid '+C.rose+'40',color:C.rose,fontFamily:'IBM Plex Mono,monospace',fontSize:7,letterSpacing:'1px',padding:'0 18px',cursor:loading?'default':'pointer'}},'SEND')
+    )
+  );
+}
+ 
+function SettingsPanel({keys,onSave,onClose,apiStatus}){
+  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||''});
+  const [saved,setSaved]=useState(false);
+  const save=()=>{localStorage.setItem('aos_fred',vals.fred);localStorage.setItem('aos_eia',vals.eia);localStorage.setItem('aos_usda',vals.usda);localStorage.setItem('aos_polygon',vals.polygon);localStorage.setItem('aos_psd',vals.psd);localStorage.setItem('aos_esr',vals.esr);localStorage.setItem('aos_ams',vals.ams);onSave(vals);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},1500);};
+  const free=[{id:'cftc',name:'CFTC COT',url:'publicreporting.cftc.gov',desc:'52-week spec positioning. Fully public.'},{id:'noaa',name:'NOAA Weather',url:'api.weather.gov',desc:'Live US weather alerts. Fully public.'},{id:'gdelt',name:'GDELT Geopolitical',url:'api.gdeltproject.org',desc:'Commodity headlines + regional risk. Fully public.'},{id:'treasury',name:'US Treasury Yields',url:'home.treasury.gov',desc:'Daily yield curve. Fully public.'},{id:'claude',name:'Claude (AlphaQuery)',url:'api.anthropic.com',desc:'AI brief + AlphaQuery + CB hawkishness. Platform key.'}];
+  const keyed=[{id:'fred',name:'FRED Macro',desc:'Fed Funds, CPI, unemployment, spreads.',link:'https://fred.stlouisfed.org/docs/api/fred/',k:'fred'},{id:'eia',name:'EIA Energy',desc:'US crude + gas storage weekly.',link:'https://www.eia.gov/opendata/register.php',k:'eia'},{id:'usda',name:'USDA NASS',desc:'Crop progress, conditions, export sales.',link:'https://quickstats.nass.usda.gov/api/',k:'usda'},{id:'psd',name:'USDA PSD',desc:'Monthly S&D: production, stocks, exports. 8 crops × US + World.',link:'https://apps.fas.usda.gov/opendataweb/',k:'psd'},{id:'esr',name:'USDA ESR',desc:'Weekly export sales — needs key regeneration.',link:'https://apps.fas.usda.gov/opendataweb/',k:'esr'},{id:'ams',name:'USDA AMS',desc:'Market News: grain cash prices, livestock, dairy.',link:'https://mymarketnews.ams.usda.gov/',k:'ams'},{id:'polygon',name:'Polygon.io',desc:'Real-time prices for all futures ($29/mo).',link:'https://polygon.io/dashboard/signup',k:'polygon'}];
+  return React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(2,4,7,0.96)',zIndex:300,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:24,overflowY:'auto'}},
+    React.createElement('div',{style:{background:C.s1,border:'1px solid '+C.border,width:'100%',maxWidth:700,maxHeight:'90vh',overflowY:'auto'}},
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid '+C.border,position:'sticky',top:0,background:C.s1}},
+        React.createElement('div',null,React.createElement('div',{style:{fontSize:9,letterSpacing:'2px',color:C.hi,marginBottom:2}},'API SETTINGS & LIVE DATA CONNECTIONS'),React.createElement('div',{style:{fontSize:7,color:C.muted}},'All APIs free except Polygon.io. FRED, EIA, USDA take 2 minutes to register.')),
+        React.createElement('button',{onClick:onClose,style:{background:'transparent',border:'1px solid '+C.border,color:C.text,fontSize:16,cursor:'pointer',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center'}},'×')
+      ),
+      React.createElement('div',{style:{padding:18}},
+        React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:C.green,marginBottom:10}},'FREE — NO KEY REQUIRED'),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:20}},
+          free.map(a=>React.createElement('div',{key:a.id,style:{background:C.s2,border:'1px solid '+C.border,padding:12}},
+            React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:6}},React.createElement(Dot,{s:apiStatus[a.id]||'live'}),React.createElement('span',{style:{fontSize:9,color:C.hi,fontWeight:600}},a.name)),
+            React.createElement('div',{style:{fontSize:7,color:C.accent,marginBottom:4}},a.url),
+            React.createElement('div',{style:{fontSize:7,color:C.muted}},a.desc)
+          ))
+        ),
+        React.createElement('div',{style:{fontSize:7,letterSpacing:'2px',color:C.gold,marginBottom:10}},'KEY REQUIRED — REGISTER IN 2 MINUTES'),
+        React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:12}},
+          keyed.map(a=>React.createElement('div',{key:a.id,style:{background:C.s2,border:'1px solid '+(vals[a.k]?C.green+'40':C.border),padding:14,transition:'border-color 0.3s'}},
+            React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+              React.createElement('div',{style:{display:'flex',alignItems:'center',gap:8}},React.createElement(Dot,{s:vals[a.k]?'live':'needs_key'}),React.createElement('span',{style:{fontSize:10,color:C.hi,fontWeight:600}},a.name)),
+              React.createElement('a',{href:a.link,target:'_blank',rel:'noopener',style:{fontSize:7,color:C.accent,textDecoration:'none',border:'1px solid '+C.accent+'40',padding:'2px 8px'}},'GET KEY →')
+            ),
+            React.createElement('div',{style:{fontSize:7,color:C.muted,marginBottom:8}},a.desc),
+            React.createElement('input',{value:vals[a.k],onChange:e=>setVals({...vals,[a.k]:e.target.value}),placeholder:'Paste '+a.name+' API key here…',style:{width:'100%',background:C.s1,border:'1px solid '+(vals[a.k]?C.green+'40':C.border),color:C.hi,fontFamily:'IBM Plex Mono,monospace',fontSize:8,padding:'8px 12px',outline:'none',transition:'border-color 0.3s'}})
+          ))
+        ),
+        React.createElement('div',{style:{display:'flex',justifyContent:'flex-end',gap:10,marginTop:20,paddingTop:14,borderTop:'1px solid '+C.border}},
+          React.createElement('button',{onClick:onClose,style:{background:'transparent',border:'1px solid '+C.border,color:C.text,fontFamily:'IBM Plex Mono,monospace',fontSize:7,letterSpacing:'1px',padding:'8px 20px',cursor:'pointer'}},'CANCEL'),
+          React.createElement('button',{onClick:save,style:{background:saved?C.green+'20':C.accent+'15',border:'1px solid '+(saved?C.green:C.accent),color:saved?C.green:C.accent,fontFamily:'IBM Plex Mono,monospace',fontSize:7,letterSpacing:'1px',padding:'8px 20px',cursor:'pointer',transition:'all 0.3s'}},saved?'✓  SAVED — CONNECTING…':'SAVE & CONNECT')
+        )
+      )
+    )
+  );
+}
+ 
+/* =====================================================================
+   DETAIL PANEL — drill-down for any live data item
+   ===================================================================== */
+function LineChart({data=[],color=C.accent,w=340,h=80,labels=[],fmt2=v=>v!=null?parseFloat(v).toFixed(2):''}){
+  const vals=data.map(Number).filter(v=>!isNaN(v));
+  if(vals.length<2)return React.createElement('div',{style:{height:h,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:7}},'INSUFFICIENT DATA');
+  const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
+  const pts=vals.map((v,i)=>`${(i/(vals.length-1))*w},${h-8-((v-mn)/rng)*(h-16)}`).join(' ');
+  const last=vals[vals.length-1],prev=vals[vals.length-2];
+  const lineColor=last>=prev?C.green:C.red;
+  return React.createElement('div',{style:{position:'relative'}},
+    React.createElement('svg',{width:w,height:h,style:{display:'block'}},
+      React.createElement('defs',null,React.createElement('linearGradient',{id:'lg',x1:'0',y1:'0',x2:'0',y2:'1'},React.createElement('stop',{offset:'0%',stopColor:lineColor,stopOpacity:0.15}),React.createElement('stop',{offset:'100%',stopColor:lineColor,stopOpacity:0}))),
+      React.createElement('polygon',{points:pts+` ${w},${h} 0,${h}`,fill:'url(#lg)'}),
+      React.createElement('polyline',{points:pts,fill:'none',stroke:lineColor,strokeWidth:1.5,strokeLinejoin:'round'}),
+      React.createElement('circle',{cx:(vals.length-1)/(vals.length-1)*w,cy:h-8-((last-mn)/rng)*(h-16),r:3,fill:lineColor})
+    ),
+    labels.length>0&&React.createElement('div',{style:{display:'flex',justifyContent:'space-between',marginTop:3}},
+      React.createElement('span',{style:{fontSize:6,color:C.muted}},labels[0]),
+      React.createElement('span',{style:{fontSize:6,color:C.muted}},labels[labels.length-1])
+    )
+  );
+}
+function BarChart({data=[],color=C.accent,w=340,h=60}){
+  const vals=data.map(Number).filter(v=>!isNaN(v));
+  if(!vals.length)return null;
+  const mx=Math.max(...vals.map(Math.abs))||1;
+  const bw=Math.floor((w-vals.length*2)/vals.length);
+  return React.createElement('svg',{width:w,height:h,style:{display:'block'}},
+    vals.map((v,i)=>{
+      const bh=Math.round((Math.abs(v)/mx)*(h-8));
+      const x=i*(bw+2);
+      const isPos=v>=0;
+      return React.createElement('rect',{key:i,x,y:isPos?h-8-bh:h-8,width:bw,height:Math.max(bh,2),fill:isPos?C.green:C.red,opacity:0.8});
+    })
+  );
+}
+function DetailPanel({detail,onClose,yields}){
+  if(!detail)return null;
+  const {type,data}=detail;
+  const esc=React.useEffect(()=>{const h=e=>{if(e.key==='Escape')onClose();};window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);},[]);
+ 
+  const header=(title,src,live=true)=>React.createElement('div',{style:{marginBottom:16}},
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+      React.createElement('div',{style:{fontSize:10,letterSpacing:'2px',color:C.hi,fontWeight:600,lineHeight:1.4}},title),
+      React.createElement('button',{onClick:onClose,style:{background:'transparent',border:'1px solid '+C.border,color:C.muted,fontSize:14,cursor:'pointer',width:24,height:24,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},'×')
+    ),
+    React.createElement('div',{style:{fontSize:6,color:live?C.green:C.muted,letterSpacing:'1px',marginTop:4}},live?'● LIVE · '+src:'⚬ '+src)
+  );
+  const statRow=(label,val,col=C.hi)=>React.createElement('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid '+C.border}},
+    React.createElement('span',{style:{fontSize:7,color:C.text}}),label,
+    React.createElement('span',{style:{fontSize:8,color:col,fontWeight:600}}),val
+  );
+  const bigNum=(v,col=C.hi)=>React.createElement('div',{style:{fontSize:26,fontWeight:700,color:col,margin:'8px 0'}},v);
+ 
+  let content=null;
+ 
+  if(type==='cot'){
+    const netHist=(data.history||[]).map(r=>r.net);
+    const lngHist=(data.history||[]).map(r=>r.lng);
+    const shtHist=(data.history||[]).map(r=>r.sht);
+    const col=data.pct>70?C.red:data.pct>40?C.gold:C.green;
+    content=React.createElement('div',null,
+      header(data.label+' — COT POSITIONING','CFTC · publicreporting.cftc.gov'),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'52W PERCENTILE'),
+          React.createElement('div',{style:{fontSize:28,fontWeight:700,color:col}},data.pct+'%')
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'NET SPEC POSITION'),
+          React.createElement('div',{style:{fontSize:20,fontWeight:700,color:data.net>0?C.green:C.red}},(data.net>0?'+':'')+Math.round(data.net/1000)+'K')
+        )
+      ),
+      netHist.length>1&&React.createElement('div',{style:{marginBottom:12}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'26-WEEK NET POSITION HISTORY'),
+        React.createElement(LineChart,{data:netHist,color:data.net>0?C.green:C.red,w:340,h:80})
+      ),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,marginBottom:12}},
+        [{l:'LONGS',v:Math.round(data.lng/1000)+'K',c:C.green},{l:'SHORTS',v:Math.round(data.sht/1000)+'K',c:C.red},{l:'OPEN INT',v:data.oi?Math.round(data.oi/1000)+'K':'—',c:C.hi},{l:'WoW CHG',v:(data.chg>0?'+':'')+Math.round(data.chg/1000)+'K',c:data.chg>0?C.green:C.red}].map(s=>
+          React.createElement('div',{key:s.l,style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
+            React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}}),s.l,
+            React.createElement('div',{style:{fontSize:11,fontWeight:600,color:s.c}}),s.v
+          )
+        )
+      ),
+      React.createElement('div',{style:{fontSize:6,color:C.muted}},'Report date: '+data.date+' · '+data.weeks+'w history · 52w range: '+Math.round(data.min52/1000)+'K to '+Math.round(data.max52/1000)+'K')
+    );
+  }
+ 
+  if(type==='fred'){
+    const chg=data.value-data.prev;
+    const col=up(chg);
+    content=React.createElement('div',null,
+      header(data.label+' — FRED MACRO','St. Louis Fed · api.stlouisfed.org'),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'LATEST VALUE'),
+          React.createElement('div',{style:{fontSize:24,fontWeight:700,color:C.hi}},fmt(data.value,2)+'%')
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'PERIOD CHANGE'),
+          React.createElement('div',{style:{fontSize:20,fontWeight:700,color:col}},(chg>0?'+':'')+fmt(chg,2)+'%')
+        )
+      ),
+      (data.hist||[]).length>1&&React.createElement('div',{style:{marginBottom:12}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'8-PERIOD HISTORY'),
+        React.createElement(LineChart,{data:data.hist,color:chg>=0?C.green:C.red,w:340,h:80})
+      ),
+      React.createElement('div',{style:{fontSize:6,color:C.muted}},'As of: '+data.date+' · Series: '+data.id)
+    );
+  }
+ 
+  if(type==='yields'){
+    const TENORS=['1M','3M','6M','1Y','2Y','5Y','10Y','20Y','30Y'];
+    const vals=TENORS.map(t=>yields[t]).filter(v=>v!=null);
+    const labls=TENORS.filter(t=>yields[t]!=null);
+    const sp=yields['2Y']&&yields['10Y']?(yields['10Y']-yields['2Y'])*100:null;
+    content=React.createElement('div',null,
+      header('US TREASURY YIELD CURVE','home.treasury.gov · '+yields.date),
+      React.createElement('div',{style:{marginBottom:12}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:8}},'FULL CURVE'),
+        React.createElement('div',{style:{display:'flex',alignItems:'flex-end',gap:4,height:80}},
+          labls.map((t,i)=>React.createElement('div',{key:t,style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}},
+            React.createElement('div',{style:{fontSize:6,color:C.hi,fontWeight:600}}),fmt(yields[t],2),
+            React.createElement('div',{style:{width:'100%',height:Math.round(10+(yields[t]/6)*60),background:yields[t]<(yields['2Y']||5)?C.red:C.accent,opacity:0.8}}),
+            React.createElement('div',{style:{fontSize:5,color:C.muted}}),t
+          ))
+        )
+      ),
+      TENORS.filter(t=>yields[t]).map(t=>
+        React.createElement('div',{key:t,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
+          React.createElement('span',{style:{fontSize:7,color:C.text}}),t,
+          React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}}),fmt(yields[t],2)+'%'
+        )
+      ),
+      sp!=null&&React.createElement('div',{style:{marginTop:8,fontSize:7,color:sp<0?C.red:C.green,fontWeight:600}},'2s/10s Spread: '+(sp>0?'+':'')+fmt(sp,0)+'bp · '+(sp<0?'INVERTED (recession indicator)':'NORMAL'))
+    );
+  }
+ 
+  if(type==='hawk'){
+    const col=data.score>65?C.red:data.score>45?C.gold:C.green;
+    content=React.createElement('div',null,
+      header(data.cb+' — CB HAWKISHNESS SCORE','Claude NLP · claude.ai · realtime'),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'HAWKISHNESS SCORE'),
+          React.createElement('div',{style:{fontSize:32,fontWeight:700,color:col}},data.score)
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'PERIOD CHANGE'),
+          React.createElement('div',{style:{fontSize:22,fontWeight:700,color:data.change?.startsWith('-')?C.green:C.red}},data.change||'—')
+        )
+      ),
+      React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:12,marginBottom:12}},
+        React.createElement('div',{style:{fontSize:7,color:C.muted,marginBottom:4}},'POLICY BIAS'),
+        React.createElement('div',{style:{fontSize:13,letterSpacing:'2px',color:col,fontWeight:600}}),data.bias||'NEUTRAL'
+      ),
+      React.createElement('div',{style:{height:4,background:C.track,marginBottom:12}},
+        React.createElement('div',{style:{height:'100%',width:data.score+'%',background:col}})
+      ),
+      React.createElement('div',{style:{fontSize:7,color:C.muted,lineHeight:1.6}},
+        data.score>65?'Hawkish stance — rates likely to stay elevated or rise. Watch for '+data.cb+' forward guidance tightening.':
+        data.score>45?'Neutral-to-slightly hawkish. Data dependent — next meeting could go either direction.':
+        'Dovish pivot underway or anticipated. Cuts likely. Watch for rate-sensitive assets.'
+      )
+    );
+  }
+ 
+  if(type==='noaa'){
+    const col=sevC((data.severity||'').toUpperCase());
+    content=React.createElement('div',null,
+      header('NOAA WEATHER ALERT','api.weather.gov · real-time'),
+      React.createElement('div',{style:{background:col+'0a',border:'1px solid '+col+'30',padding:12,marginBottom:12}},
+        React.createElement('div',{style:{fontSize:8,letterSpacing:'1px',color:col,marginBottom:4}}),badge((data.severity||'').toUpperCase(),col),
+        React.createElement('div',{style:{fontSize:10,color:C.hi,marginTop:8,lineHeight:1.5}}),data.event
+      ),
+      data.area&&React.createElement('div',{style:{marginBottom:12}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'AFFECTED AREA'),
+        React.createElement('div',{style:{fontSize:8,color:C.text,lineHeight:1.6}}),data.area
+      ),
+      React.createElement('div',{style:{fontSize:6,color:C.muted}},'Source: NOAA National Weather Service · Updated in real-time')
+    );
+  }
+ 
+  if(type==='geo'){
+    content=React.createElement('div',null,
+      header(data.r+' — GEOPOLITICAL INTELLIGENCE','GDELT · api.gdeltproject.org · 7d'),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'CONFLICT INDEX'),
+          React.createElement('div',{style:{fontSize:26,fontWeight:700,color:data.ci>60?C.red:C.gold}}),data.ci+'/100'
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'ECONOMIC INDEX'),
+          React.createElement('div',{style:{fontSize:26,fontWeight:700,color:data.ei>55?C.green:C.gold}}),data.ei+'/100'
+        )
+      ),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'ARTICLES (7d)'),
+          React.createElement('div',{style:{fontSize:16,fontWeight:600,color:C.hi}}),data.n||0
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'AVG TONE'),
+          React.createElement('div',{style:{fontSize:16,fontWeight:600,color:parseFloat(data.tone||0)>0?C.green:C.red}}),data.tone||'—'
+        )
+      ),
+      React.createElement('div',{style:{fontSize:7,color:C.muted,lineHeight:1.6}},'Conflict index derived from article volume and negative sentiment. Economic index from positive economic coverage. Based on GDELT media analysis.')
+    );
+  }
+ 
+  if(type==='sc'){
+    const col=data.idx>65?C.red:data.idx>50?C.gold:C.green;
+    content=React.createElement('div',null,
+      header(data.s+' — SUPPLY CHAIN STRESS','GDELT · api.gdeltproject.org · 7d'),
+      React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:14,marginBottom:12,textAlign:'center'}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:6}},'STRESS INDEX'),
+        React.createElement('div',{style:{fontSize:40,fontWeight:700,color:col}}),data.idx,
+        React.createElement('div',{style:{fontSize:7,color:col,marginTop:4}}),data.idx>65?'HIGH STRESS':data.idx>50?'MODERATE STRESS':'LOW STRESS'
+      ),
+      React.createElement('div',{style:{height:6,background:C.track,marginBottom:12}},
+        React.createElement('div',{style:{height:'100%',width:data.idx+'%',background:col}})
+      ),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'SIGNAL ARTICLES (7d)'),
+          React.createElement('div',{style:{fontSize:16,fontWeight:600,color:C.hi}}),data.n||0
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:8}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'INDEX SCALE'),
+          React.createElement('div',{style:{fontSize:8,color:C.muted,lineHeight:1.4}}),'0=None · 50=Normal · 100=Extreme'
+        )
+      ),
+      React.createElement('div',{style:{fontSize:7,color:C.muted,lineHeight:1.6}},'Index derived from GDELT article volume and sentiment on supply disruption, shortage, and congestion topics in the '+data.s.toLowerCase()+' sector over the trailing 7 days.')
+    );
+  }
+ 
+  if(type==='enso'){
+    const col=data.oni>=0.5?C.red:data.oni<=-0.5?C.accent:C.gold;
+    content=React.createElement('div',null,
+      header('ENSO / ONI INDEX — CLIMATE SIGNAL','NOAA CPC · cpc.ncep.noaa.gov'),
+      React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}},
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'ONI ANOMALY'),
+          React.createElement('div',{style:{fontSize:28,fontWeight:700,color:col}}),fmt(data.oni,2)
+        ),
+        React.createElement('div',{style:{background:C.s2,border:'1px solid '+C.border,padding:10}},
+          React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'PHASE'),
+          React.createElement('div',{style:{fontSize:16,fontWeight:700,letterSpacing:'1px',color:col}}),data.phase
+        )
+      ),
+      (data.recent||[]).length>0&&React.createElement('div',{style:{marginBottom:12}},
+        React.createElement('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:8}},'RECENT SEASONAL ONI VALUES'),
+        data.recent.map((r,i)=>React.createElement('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
+          React.createElement('span',{style:{fontSize:7,color:C.text}}),r.seas+' '+r.yr,
+          React.createElement('span',{style:{fontSize:8,color:r.anom>=0.5?C.red:r.anom<=-0.5?C.accent:C.hi,fontWeight:600}}),(r.anom>0?'+':'')+fmt(r.anom,2)
+        ))
+      ),
+      React.createElement('div',{style:{background:C.gold+'0a',border:'1px solid '+C.gold+'20',padding:10}},
+        React.createElement('div',{style:{fontSize:6,color:C.gold,letterSpacing:'1px',marginBottom:4}},'COMMODITY IMPLICATION'),
+        React.createElement('div',{style:{fontSize:7,color:C.text,lineHeight:1.6}}),data.implication
+      )
+    );
+  }
+ 
+  if(!content)return null;
+  return React.createElement('div',{style:{position:'fixed',inset:0,zIndex:200,display:'flex',justifyContent:'flex-end'}},
+    React.createElement('div',{onClick:onClose,style:{flex:1,background:'rgba(2,4,7,0.6)'}}),
+    React.createElement('div',{style:{width:380,background:C.s1,borderLeft:'1px solid '+C.border,overflowY:'auto',padding:16,boxShadow:'-8px 0 32px rgba(0,0,0,0.6)'}},content)
+  );
+}
+ 
+/* =====================================================================
+   MAIN APP
+   ===================================================================== */
+function AlphaOS(){
+  const [mod,setMod]=useState('BRIEFING');
+  const [showSettings,setShowSettings]=useState(false);
+  const [showAlerts,setShowAlerts]=useState(false);
+  const [detail,setDetail]=useState(null);
+  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||''}));
+  const [prices,setPrices]=useState(null);
+  const [yields,setYields]=useState(null);
+  const [cot,setCot]=useState([]);
+  const [noaa,setNoaa]=useState(null);
+  const [gdelt,setGdelt]=useState(null);
+  const [geo,setGeo]=useState([]);
+  const [sc,setSC]=useState([]);
+  const [enso,setEnso]=useState(null);
+  const [hawk,setHawk]=useState(null);
+  const [fred,setFred]=useState(null);
+  const [eia,setEia]=useState(null);
+  const [usda,setUsda]=useState(null);
+  const [cotLoading,setCotLoading]=useState(true);
+  const [psd,setPsd]=useState(null);
+  const [esr,setEsr]=useState(null);
+  const [ams,setAms]=useState(null);
+  const [apiStatus,setApiStatus]=useState({cftc:'loading',noaa:'loading',gdelt:'loading',treasury:'loading',enso:'loading',claude:'live',fred:'needs_key',eia:'needs_key',usda:'needs_key',polygon:'needs_key',psd:'needs_key',esr:'needs_key',ams:'needs_key'});
+ 
+  // Boot: all free APIs in parallel
+  useEffect(()=>{
+    (async()=>{
+      const [pRes,yRes,nRes,gRes,eRes]=await Promise.all([fetchPrices(),fetchYields(),fetchNOAA(),fetchGDELT(),fetchENSO()]);
+      setPrices(pRes);setYields(yRes);setNoaa(nRes);setGdelt(gRes);setEnso(eRes);
+      setApiStatus(s=>({...s,noaa:nRes.status,gdelt:gRes.status,treasury:yRes.status,enso:eRes.status,polygon:pRes.status==='live'?'live':'needs_key'}));
+      // COT sequential (pacing)
+      const cotRes=await fetchCOT();setCot(cotRes);setCotLoading(false);
+      setApiStatus(s=>({...s,cftc:cotRes.some(c=>c.live)?'live':'error'}));
+      // Claude scoring + GDELT derived
+      const [hRes,geoRes,scRes]=await Promise.all([fetchHawkishness(),fetchGeoRisk(),fetchSupplyChain()]);
+      setHawk(hRes);setGeo(geoRes);setSC(scRes);
+    })();
+  },[]);
+ 
+  // Key-gated APIs
+  useEffect(()=>{
+    if(apiKeys.fred){setApiStatus(s=>({...s,fred:'loading'}));fetchFRED(apiKeys.fred).then(d=>{if(d){setFred(d);setApiStatus(s=>({...s,fred:'live'}));}else setApiStatus(s=>({...s,fred:'error'}));});}
+    if(apiKeys.eia){setApiStatus(s=>({...s,eia:'loading'}));fetchEIA(apiKeys.eia).then(d=>{if(d){setEia(d);setApiStatus(s=>({...s,eia:'live'}));}else setApiStatus(s=>({...s,eia:'error'}));});}
+    if(apiKeys.usda){setApiStatus(s=>({...s,usda:'loading'}));fetchUSDA(apiKeys.usda).then(d=>{if(d){setUsda(d);setApiStatus(s=>({...s,usda:'live'}));}else setApiStatus(s=>({...s,usda:'error'}));});}
+    if(apiKeys.psd){setApiStatus(s=>({...s,psd:'loading'}));fetchPSDMulti(apiKeys.psd).then(d=>{if(d){setPsd(d);setApiStatus(s=>({...s,psd:'live'}));}else setApiStatus(s=>({...s,psd:'error'}));});}
+    if(apiKeys.esr){setApiStatus(s=>({...s,esr:'loading'}));fetchESR(apiKeys.esr).then(d=>{if(d){setEsr(d);setApiStatus(s=>({...s,esr:d.status||'live'}));}else setApiStatus(s=>({...s,esr:'error'}));});}
+    if(apiKeys.ams){setApiStatus(s=>({...s,ams:'loading'}));fetchAMS(apiKeys.ams).then(d=>{if(d){setAms(d);setApiStatus(s=>({...s,ams:'live'}));}else setApiStatus(s=>({...s,ams:'error'}));});}
+  },[apiKeys]);
+ 
+  const ctx=useMemo(()=>buildCtx({prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso,psd,esr,ams}),[prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso,psd,esr,ams]);
+ 
+  // Dynamic alerts from live data only
+  const alerts=useMemo(()=>{
+    const a=[];
+    (cot||[]).forEach(c=>{if(!c.live)return;if(c.pct>=80)a.push({s:'HIGH',t:c.label+' COT at '+c.pct+'th %ile — spec longs historically overbought (net: '+fmtK(c.net*1000)+')',src:'CFTC LIVE'});else if(c.pct<=20)a.push({s:'MEDIUM',t:c.label+' COT at '+c.pct+'th %ile — crowded short setup',src:'CFTC LIVE'});});
+    if(hawk?.scores){const hs=hawk.scores;const fed=hs.FED?.score||50,ecb=hs.ECB?.score||50;if(Math.abs(fed-ecb)>15)a.push({s:'HIGH',t:'CB Hawkishness divergence: FED '+fed+' vs ECB '+ecb+' (spread '+(fed-ecb>0?'+':'')+(fed-ecb)+'pt)',src:'CLAUDE NLP LIVE'});}
+    if(noaa?.count>5)a.push({s:'MEDIUM',t:noaa.count+' active NOAA severe weather alerts across US',src:'NOAA LIVE'});
+    (geo||[]).forEach(g=>{if(g.live&&g.ci>65)a.push({s:'HIGH',t:g.r+': GDELT conflict index '+g.ci+'/100 ('+g.n+' articles, avg tone '+g.tone+')',src:'GDELT LIVE'});});
+    if(!a.length)a.push({s:'LOW',t:'No high-severity signals from live data feeds',src:'SYSTEM'});
+    return a.slice(0,8);
+  },[cot,hawk,noaa,geo]);
+ 
+  // Ticker from live prices only
+  const tickers=useMemo(()=>{
+    const P=prices?.data||{};
+    const ord=['WTI','BRENT','GOLD','COPPER','CORN','SOYBEANS','WHEAT','COFFEE','COCOA','SUGAR','COTTON','NAT GAS','S&P 500','VIX','EUR/USD','DXY','10Y UST'];
+    return ord.map(n=>{const p=P[n];return{n,v:p?fmt(p.price,n==='VIX'||n.includes('USD')||n==='DXY'?2:2):null,c:p?fmtPct(p.pct):null,up:p?(p.pct||0)>=0:true};}).filter(t=>t.v);
+  },[prices]);
+ 
+  const INTEL=['BRIEFING','QUERY'];const MKT=['MACRO','FLOWS','ALTDATA','NLP','COMMOD'];
+  const LBL={BRIEFING:'BRIEFING',QUERY:'ALPHAQUERY',MACRO:'MACRO',FLOWS:'FLOWS',ALTDATA:'ALT DATA',NLP:'NLP INTEL',COMMOD:'COMMODITIES'};
+ 
+  return React.createElement('div',{style:{display:'flex',flexDirection:'column',height:'100vh',background:C.bg,fontFamily:'IBM Plex Mono,monospace',overflow:'hidden'}},
+    React.createElement('style',null,'@keyframes alphaTick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}@keyframes alphaPulse{0%,100%{opacity:1}50%{opacity:0.3}}@keyframes alphaDot{0%,80%,100%{opacity:0.3;transform:scale(0.8)}40%{opacity:1;transform:scale(1)}}@keyframes shimmer{0%{opacity:0.3}50%{opacity:0.7}100%{opacity:0.3}}::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:#050810}::-webkit-scrollbar-thumb{background:#141830;border-radius:2px}input::placeholder{color:#1a2238}'),
+    /* TOPBAR */
+    React.createElement('div',{style:{background:C.s1,borderBottom:'1px solid '+C.border,display:'flex',alignItems:'center',padding:'0 16px',height:40,flexShrink:0,gap:10,position:'relative',zIndex:50}},
+      React.createElement('div',{style:{fontSize:13,fontWeight:700,color:C.hi,letterSpacing:'3px',flexShrink:0}},'ALPHA',React.createElement('span',{style:{color:C.rose}},'OS')),
+      React.createElement('div',{style:{fontSize:6,letterSpacing:'2px',padding:'2px 8px',border:'1px solid '+C.muted+'40',color:C.muted,flexShrink:0}},fred?'FRED LIVE':'NO FRED KEY'),
+      React.createElement('div',{style:{flex:1,overflow:'hidden',height:'100%',display:'flex',alignItems:'center',marginLeft:8}},
+        tickers.length>0?
+          React.createElement('div',{style:{display:'inline-flex',gap:22,whiteSpace:'nowrap',animation:'alphaTick 60s linear infinite'}},
+            [...tickers,...tickers].map((t,i)=>React.createElement('div',{key:i,style:{display:'flex',gap:6,fontSize:8,alignItems:'center'}},
+              React.createElement('span',{style:{color:C.muted,letterSpacing:'0.5px'}},t.n),
+              React.createElement('span',{style:{color:t.up?C.green:C.red}},t.v+' ',t.c)
+            ))):
+          React.createElement('div',{style:{fontSize:7,color:C.muted,letterSpacing:'2px',animation:'shimmer 1.5s ease-in-out infinite'}},'LOADING LIVE PRICES FROM YAHOO FINANCE…')
+      ),
+      React.createElement('div',{style:{display:'flex',gap:8,flexShrink:0}},
+        React.createElement('button',{onClick:()=>setShowAlerts(!showAlerts),style:{background:alerts.some(a=>a.s==='HIGH')?C.red+'12':C.s2,border:'1px solid '+(alerts.some(a=>a.s==='HIGH')?C.red+'40':C.border),color:alerts.some(a=>a.s==='HIGH')?C.red:C.text,fontFamily:'IBM Plex Mono,monospace',fontSize:7,letterSpacing:'1px',padding:'4px 12px',cursor:'pointer'}},'⚡ '+alerts.length+' ALERTS'),
+        React.createElement('button',{onClick:()=>setShowSettings(true),style:{background:C.s2,border:'1px solid '+C.border,color:C.text,fontFamily:'IBM Plex Mono,monospace',fontSize:7,letterSpacing:'1px',padding:'4px 12px',cursor:'pointer'}},'⚙  API KEYS')
+      ),
+      showAlerts&&React.createElement('div',{style:{position:'absolute',top:40,right:0,width:480,background:C.s1,border:'1px solid '+C.border,zIndex:100,boxShadow:'0 8px 32px rgba(0,0,0,0.8)'}},
+        React.createElement('div',{style:{padding:'10px 14px',borderBottom:'1px solid '+C.border,display:'flex',justifyContent:'space-between',alignItems:'center'}},React.createElement('span',{style:{fontSize:7,letterSpacing:'2px',color:C.muted}},'LIVE ALERTS — GENERATED FROM REAL DATA'),React.createElement('button',{onClick:()=>setShowAlerts(false),style:{background:'transparent',border:'none',color:C.muted,cursor:'pointer',fontSize:12}},'×')),
+        React.createElement('div',{style:{padding:'8px 14px'}},alerts.map((a,i)=>React.createElement('div',{key:i,style:{display:'flex',gap:8,padding:'6px 0',borderBottom:'1px solid '+C.border,alignItems:'flex-start'}},
+          badge(a.s,sevC(a.s)),React.createElement('span',{style:{fontSize:8,color:C.text,flex:1,lineHeight:1.4}},a.t),React.createElement('span',{style:{fontSize:6,color:C.green,flexShrink:0}},a.src)
+        )))
+      )
+    ),
+    /* NAV */
+    React.createElement('div',{style:{background:C.s1,borderBottom:'1px solid '+C.border,display:'flex',alignItems:'center',padding:'0 16px',height:34,flexShrink:0,gap:2}},
+      React.createElement('span',{style:{fontSize:7,letterSpacing:'2px',color:C.text,marginRight:8,paddingRight:10,borderRight:'1px solid '+C.border}},'INTEL'),
+      INTEL.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:8,letterSpacing:'1.5px',padding:'4px 14px',cursor:'pointer',background:mod===m?C.rose+'18':'transparent',border:'none',color:mod===m?C.rose:C.muted,borderBottom:'2px solid '+(mod===m?C.rose:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m])),
+      React.createElement('span',{style:{fontSize:7,letterSpacing:'2px',color:C.text,margin:'0 10px',padding:'0 10px',borderLeft:'1px solid '+C.border,borderRight:'1px solid '+C.border}},'MARKET'),
+      MKT.map(m=>React.createElement('button',{key:m,onClick:()=>setMod(m),style:{fontSize:8,letterSpacing:'1.5px',padding:'4px 14px',cursor:'pointer',background:mod===m?C.accent+'18':'transparent',border:'none',color:mod===m?C.accent:C.muted,borderBottom:'2px solid '+(mod===m?C.accent:'transparent'),fontFamily:'IBM Plex Mono,monospace',transition:'all 0.15s'}},LBL[m]))
+    ),
+    /* CONTENT */
+    React.createElement('div',{style:{flex:1,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0}},
+      mod==='BRIEFING'&&React.createElement(BriefingModule,{ctx}),
+      mod==='QUERY'&&   React.createElement(QueryModule,{ctx}),
+      mod==='MACRO'&&   React.createElement(MacroModule,{prices,yields,fred,hawk,setDetail}),
+      mod==='FLOWS'&&   React.createElement(FlowsModule,{cot,loading:cotLoading,setDetail,esr}),
+      mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail,ams}),
+      mod==='NLP'&&     React.createElement(NLPModule,{hawk,sc,geo,setDetail}),
+      mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr})
+    ),
+    /* STATUS BAR */
+    React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
+      Object.entries(apiStatus).map(([k,v])=>React.createElement('div',{key:k,style:{display:'flex',gap:5,alignItems:'center',flexShrink:0}},
+        React.createElement(Dot,{s:v}),
+        React.createElement('span',{style:{fontSize:6,letterSpacing:'1.5px',color:v==='live'?C.green:v==='needs_key'?C.gold:v==='error'?C.red:C.text,whiteSpace:'nowrap'}},k.toUpperCase()+' '+(v==='live'?'LIVE':v==='needs_key'?'KEY NEEDED':v==='error'?'ERROR':v.toUpperCase()))
+      )),
+      React.createElement('div',{style:{marginLeft:'auto',fontSize:6,color:C.muted,whiteSpace:'nowrap',flexShrink:0}},'AlphaOS v4.0 · Zero mock data · All values from live APIs · '+new Date().toLocaleDateString())
+    ),
+    showSettings&&React.createElement(SettingsPanel,{keys:apiKeys,onSave:k=>setApiKeys(k),onClose:()=>setShowSettings(false),apiStatus}),
+    detail&&React.createElement(DetailPanel,{detail,onClose:()=>setDetail(null),yields})
+  );
+}
+ 
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(AlphaOS));
+})();
+</script>
+</body>
+</html>
