@@ -222,7 +222,7 @@ async function fetchEIA(key){
 async function fetchUSDA(key){
   if(!key)return null;
   try{
-    const r=await fetch('https://quickstats.nass.usda.gov/api/api_GET/?key='+key+'&commodity_desc=CORN&statisticcat_desc=CONDITION&class_desc=GOOD%20%2B%20EXCELLENT&year__GE=2024&state_name=US%20TOTAL&format=json');
+    const nassUrl='https://quickstats.nass.usda.gov/api/api_GET/?key='+key+'&commodity_desc=CORN&statisticcat_desc=CONDITION&class_desc=GOOD%20%2B%20EXCELLENT&year__GE=2024&state_name=US%20TOTAL&format=json';const r=await fetch('https://corsproxy.io/?'+encodeURIComponent(nassUrl));
     if(!r.ok)return null;const d=await r.json();
     const rows=(d.data||[]).slice(0,8).map(r=>({week:r.week_ending,value:parseFloat(r.Value),year:r.year}));
     return rows.length?{status:'live',src:'USDA NASS',data:rows}:null;
@@ -1172,13 +1172,13 @@ function QueryModule({ctx,claudeKey}){
 }
 
 function SettingsPanel({keys,onSave,onClose,apiStatus}){
-  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||'',claude_key:keys.claude_key||''});
+  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||'',claude_key:keys.claude_key||'',te:keys.te||''});
   const [saved,setSaved]=useState(false);
   const save=()=>{
     localStorage.setItem('aos_fred',vals.fred);localStorage.setItem('aos_eia',vals.eia);
     localStorage.setItem('aos_usda',vals.usda);localStorage.setItem('aos_polygon',vals.polygon);
     localStorage.setItem('aos_psd',vals.psd);localStorage.setItem('aos_esr',vals.esr);
-    localStorage.setItem('aos_ams',vals.ams);
+    localStorage.setItem('aos_ams',vals.ams);localStorage.setItem('aos_claude_key',vals.claude_key||'');localStorage.setItem('aos_te',vals.te||'');
     onSave(vals);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},1500);
   };
   const free=[{id:'cftc',name:'CFTC COT',url:'publicreporting.cftc.gov',desc:'52-week spec positioning. Fully public.'},{id:'noaa',name:'NOAA Weather',url:'api.weather.gov',desc:'Live US weather alerts. Fully public.'},{id:'gdelt',name:'GDELT Geopolitical',url:'api.gdeltproject.org',desc:'Commodity headlines + regional risk. Fully public.'},{id:'treasury',name:'US Treasury Yields',url:'home.treasury.gov',desc:'Daily yield curve. Fully public.'},{id:'claude_key',name:'Claude API Key',url:'console.anthropic.com/settings/keys',desc:'Required for AlphaQuery, AI Brief + CB hawkishness. Free tier available.',k:'claude_key'}];
@@ -1190,6 +1190,7 @@ function SettingsPanel({keys,onSave,onClose,apiStatus}){
     {id:'psd',name:'USDA PSD',desc:'Monthly S&D balance sheet: production, stocks, exports for 8 crops × US + World.',link:'https://apps.fas.usda.gov/opendataweb/',k:'psd'},
     {id:'esr',name:'USDA ESR',desc:'Weekly export sales & commitments — 5 crops, leading demand indicator.',link:'https://apps.fas.usda.gov/opendataweb/',k:'esr'},
     {id:'ams',name:'USDA AMS',desc:'Market News: grain cash prices, livestock auctions, dairy.',link:'https://mymarketnews.ams.usda.gov/',k:'ams'},
+    {id:'te',name:'Trading Economics',desc:'Live commodities, FX, bonds, indices + macro history 196 countries.',link:'https://tradingeconomics.com/api',k:'te'},
     {id:'polygon',name:'Polygon.io',desc:'Real-time prices for all futures ($29/mo).',link:'https://polygon.io/dashboard/signup',k:'polygon'}
   ];
   return React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(2,4,7,0.96)',zIndex:300,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:24,overflowY:'auto'}},
@@ -1627,73 +1628,43 @@ function DetailPanel({detail,onClose,yields}){
 /* ═══════════════════════════════════════════════════════
    PSD WORKBENCH v2 — Multi-select, all countries, 0,000.000 format
    ═══════════════════════════════════════════════════════ */
-// Verified USDA PSD country codes from live API
-const PSD_CC={
-  'World (Sum)':'ALL','United States':'US','China':'CH','Brazil':'BR',
-  'EU-27':'E4','Argentina':'AR','India':'IN','Ukraine':'UP',
-  'Canada':'CA','Russia':'RS','Australia':'AS','Pakistan':'PK',
-  'Indonesia':'ID','Mexico':'MX','Thailand':'TH','Vietnam':'VM',
-  'Malaysia':'MY','Kazakhstan':'KZ','Turkey':'TU','Iran':'IR',
-  'Egypt':'EG','Nigeria':'NI','South Africa':'SF','Ethiopia':'ET',
-  'Bangladesh':'BG','Japan':'JA','South Korea':'KS','Nigeria':'NI',
-  'Saudi Arabia':'SA','Algeria':'AG'
-};
+
+/* ═══════════════════════════════════════════
+   PSD WORKBENCH v3 — PowerBI-style table + multi-attribute chart
+   ═══════════════════════════════════════════ */
+const PSD_CC={'World (Sum)':'ALL','United States':'US','China':'CH','Brazil':'BR','EU-27':'E4','Argentina':'AR','India':'IN','Ukraine':'UP','Canada':'CA','Russia':'RS','Australia':'AS','Pakistan':'PK','Indonesia':'ID','Mexico':'MX','Thailand':'TH','Vietnam':'VM','Malaysia':'MY','Kazakhstan':'KZ','Turkey':'TU','Iran':'IR','Egypt':'EG','Nigeria':'NI','South Africa':'SF','Ethiopia':'ET','Bangladesh':'BG','Japan':'JA','South Korea':'KS','Saudi Arabia':'SA','Algeria':'AG'};
 const PSD_CC_NAME=Object.fromEntries(Object.entries(PSD_CC).map(([k,v])=>[v,k]));
-const PSD_ATTRS_DEF={
-  20:{n:'Beg. Stocks',short:'BEG'},
-  28:{n:'Production',short:'PROD'},
-  57:{n:'Imports',short:'IMP'},
-  86:{n:'Total Supply',short:'TSUP'},
-  88:{n:'Exports',short:'EXP'},
-  125:{n:'Dom. Consumption',short:'DOM'},
-  176:{n:'Ending Stocks',short:'ESTK'},
-  195:{n:'Stocks/Use %',short:'S/U%',derived:true}
-};
+const PSD_ATTR_MAP={20:{n:'Beg. Stocks',s:'BEG'},28:{n:'Production',s:'PROD'},57:{n:'Imports',s:'IMP'},86:{n:'Total Supply',s:'TSUP'},88:{n:'Exports',s:'EXP'},125:{n:'Dom. Consumption',s:'DOM'},176:{n:'Ending Stocks',s:'ESTK'},195:{n:'Stocks/Use %',s:'S/U%'}};
 const PSD_ATTR_IDS=[20,28,57,86,88,125,176,195];
-const PSD_YEARS=[2018,2019,2020,2021,2022,2023,2024,2025];
+const PSD_ALL_YEARS=Array.from({length:2025-1960+1},(_,i)=>1960+i);
+const CROP_COLORS={CORN:'#f9ca24',SOYBEANS:'#6ab04c',WHEAT:'#4a9ede','PALM OIL':'#ff6b35',COTTON:'#e17055',COFFEE:'#a0522d',SUGAR:'#b2bec3',COCOA:'#795548'};
 
 function PSDWorkbench({psd,psdKey}){
   const CE=React.createElement;
   const [selCrops,setSelCrops]=useState(['CORN','SOYBEANS','WHEAT']);
   const [selAttrs,setSelAttrs]=useState([28,176,125,195]);
-  const [selYears,setSelYears]=useState([2022,2023,2024,2025]);
+  const [selYears,setSelYears]=useState([2021,2022,2023,2024,2025]);
   const [selCountries,setSelCountries]=useState(['ALL','US']);
   const [viewMode,setViewMode]=useState('table');
-  const [chartAttr,setChartAttr]=useState(195);
+  const [chartAttrs,setChartAttrs]=useState([195]);
   const [chartType,setChartType]=useState('line');
-  const [chartDim,setChartDim]=useState('year'); // year | country | crop
   const [tableData,setTableData]=useState({});
   const [loadingKeys,setLoadingKeys]=useState(new Set());
+  const [yearFrom,setYearFrom]=useState(2018);
+  const [yearTo,setYearTo]=useState(2025);
 
-  // Number formatter: 0,000.000 always 3 decimals
   const fmtN=(v,isPC)=>{
-    if(v==null||isNaN(v))return '—';
+    if(v==null||isNaN(v)||v==='')return '—';
     const n=parseFloat(v);
     if(isPC)return n.toFixed(1)+'%';
-    // Format with thousands separator and 3 decimals
-    const parts=n.toFixed(3).split('.');
+    const parts=Math.abs(n).toFixed(3).split('.');
     parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,',');
-    return parts.join('.');
+    return (n<0?'-':'')+parts.join('.');
   };
 
-  // Get value for crop+year+attrId+countryCode
-  const getVal=React.useCallback((crop,year,attrId,cc)=>{
-    const d=tableData[crop+'_'+year];
-    if(!d)return null;
-    if(attrId===195){
-      const end=getVal(crop,year,176,cc),dom=getVal(crop,year,125,cc);
-      return end!=null&&dom!=null&&dom>0?(end/dom)*100:null;
-    }
-    const attrKey={20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'};
-    if(cc==='ALL')return d.world?.[attrKey[attrId]]??null;
-    if(cc==='US')return d.us?.[attrKey[attrId]]??null;
-    // Other countries via rawByCC
-    return d.rawByCC?.[cc]?.[attrId]??null;
-  },[tableData]);
-
-  // Inline fetch — stable ref avoids infinite useEffect loop
   const psdKeyRef=useRef(psdKey);
   useEffect(()=>{psdKeyRef.current=psdKey;},[psdKey]);
+
   const doFetch=React.useCallback(async(crop,year)=>{
     const key=psdKeyRef.current;
     const meta=PSD_CROPS[crop];if(!meta||!key)return null;
@@ -1712,13 +1683,17 @@ function PSDWorkbench({psd,psdKey}){
       }catch(e){}
     }return null;
   },[]);
+
   useEffect(()=>{
     if(!psdKey)return;
     const needed=[];
-    selCrops.forEach(crop=>selYears.forEach(year=>{const k=crop+'_'+year;if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});}));
+    selCrops.forEach(crop=>selYears.forEach(year=>{
+      const k=crop+'_'+year;
+      if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});
+    }));
     if(!needed.length)return;
-    const keys=needed.map(n=>n.k);
-    setLoadingKeys(prev=>{const n=new Set(prev);keys.forEach(k=>n.add(k));return n;});
+    const ks=needed.map(n=>n.k);
+    setLoadingKeys(prev=>{const n=new Set(prev);ks.forEach(k=>n.add(k));return n;});
     needed.forEach(({crop,year,k})=>{
       doFetch(crop,year).then(d=>{
         setTableData(prev=>({...prev,[k]:d||null}));
@@ -1727,67 +1702,73 @@ function PSDWorkbench({psd,psdKey}){
     });
   },[psdKey,selCrops,selYears]);
 
+  const getVal=React.useCallback((crop,year,attrId,cc)=>{
+    const d=tableData[crop+'_'+year];if(!d)return null;
+    if(attrId===195){const end=getVal(crop,year,176,cc),dom=getVal(crop,year,125,cc);return end!=null&&dom!=null&&dom>0?(end/dom)*100:null;}
+    const attrKey={20:'begStocks',28:'production',57:'imports',86:'totalSupply',88:'exports',125:'domConsumption',176:'endingStocks'};
+    if(cc==='ALL')return d.world?.[attrKey[attrId]]??null;
+    if(cc==='US')return d.us?.[attrKey[attrId]]??null;
+    return d.rawByCC?.[cc]?.[attrId]??null;
+  },[tableData]);
+
   const toggle=(arr,setArr,v)=>setArr(p=>p.includes(v)?p.filter(x=>x!==v):[...p,v]);
-  const toggleY=y=>setSelYears(p=>(p.includes(y)?p.filter(x=>x!==y):[...p,y]).sort((a,b)=>a-b));
+  const toggleCA=(arr,setArr,v)=>setArr(p=>p.includes(v)?p.filter(x=>x!==v):[...p,v]);
+  const toggleYear=y=>setSelYears(p=>(p.includes(y)?p.filter(x=>x!==y):[...p,y]).sort((a,b)=>a-b));
+  const toggleChartAttr=a=>setChartAttrs(p=>p.includes(a)?p.length>1?p.filter(x=>x!==a):p:[...p,a]);
   const isLoading=loadingKeys.size>0;
   const suColor=v=>v==null?C.muted:v<10?C.red:v<20?C.gold:C.green;
+  const ATTR_COLORS={20:'#74b9ff',28:C.green,57:'#a29bfe',86:'#00cec9',88:C.gold,125:'#fd79a8',176:C.accent,195:C.rose};
 
-  // Chip selector component
-  const ChipSel=({label,items,selected,onToggle,color=C.accent})=>CE('div',{style:{marginBottom:10}},
-    CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},label),
-    CE('div',{style:{display:'flex',flexWrap:'wrap',gap:3}},
-      items.map(([val,lbl])=>CE('button',{key:val,onClick:()=>onToggle(val),
-        style:{fontSize:7,padding:'2px 7px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',
-          background:selected.includes(val)?color+'25':'transparent',
-          border:'1px solid '+(selected.includes(val)?color:C.border),
-          color:selected.includes(val)?color:C.muted}},lbl||val))
-    )
-  );
+  // Apply year range to selYears
+  const applyYearRange=()=>{
+    const ys=PSD_ALL_YEARS.filter(y=>y>=yearFrom&&y<=yearTo);
+    setSelYears(ys);
+  };
 
-  // Build chart series
-  const chartSeries=React.useMemo(()=>{
-    const CROP_COLORS={CORN:C.gold,SOYBEANS:C.green,WHEAT:C.accent,COTTON:C.rose,COFFEE:'#a0522d',SUGAR:'#a8a8a8',COCOA:'#7b4f2e','PALM OIL':'#ff8c00'};
-    const CC_COLORS={ALL:'#c8a0e4',US:C.accent,CH:'#ff6b6b',BR:C.green,AR:'#ffd93d',IN:'#ff9f43',UP:'#74b9ff',CA:'#55efc4',AS:'#fd79a8',RS:'#636e72'};
-    const series=[];
-    if(chartDim==='year'){
-      selCrops.forEach((crop,ci)=>selCountries.forEach((cc,cci)=>{
-        const vals=selYears.map(yr=>getVal(crop,yr,chartAttr,cc));
-        const color=CROP_COLORS[crop]||C.accent;
-        const lbl=selCountries.length>1?crop+'/'+( PSD_CC_NAME[cc]?.split(' ')[0]||cc):crop;
-        series.push({label:lbl,vals,color,xLabels:selYears.map(y=>'MY'+y)});
-      }));
-    } else if(chartDim==='country'){
-      selCrops.forEach(crop=>selCountries.forEach((cc,i)=>{
-        const vals=selYears.map(yr=>getVal(crop,yr,chartAttr,cc));
-        series.push({label:PSD_CC_NAME[cc]?.split(' ')[0]||cc,vals,color:CC_COLORS[cc]||C.accent,xLabels:selYears.map(y=>'MY'+y)});
-      }));
-    }
-    return series;
-  },[tableData,selCrops,selCountries,selYears,chartAttr,chartDim]);
-
-  // SVG chart renderer
+  // ─── SVG CHART ────────────────────────────────────
   const renderChart=()=>{
-    const W=820,H=300,PAD={l:72,r:20,t:24,b:54};
+    const W=840,H=320,PAD={l:80,r:24,t:32,b:60};
     const plotW=W-PAD.l-PAD.r,plotH=H-PAD.t-PAD.b;
-    const allV=chartSeries.flatMap(s=>s.vals).filter(v=>v!=null&&!isNaN(v));
-    if(!allV.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data — select crops, countries and years above');
-    const mn=Math.min(...allV)*0.97,mx=Math.max(...allV)*1.03,rng=mx-mn||1;
-    const xLabels=chartSeries[0]?.xLabels||selYears.map(y=>'MY'+y);
-    const xP=i=>PAD.l+(i/(xLabels.length-1||1))*plotW;
-    const yP=v=>PAD.t+plotH-((v-mn)/rng)*plotH;
-    const isPC=chartAttr===195;
-    const yFmt=v=>isPC?v.toFixed(1)+'%':Math.abs(v)>=10000?(v/1000).toFixed(0)+'K':v.toFixed(0);
-    const nTicks=4;
-    const attrLabel=PSD_ATTRS_DEF[chartAttr]?.n||'';
-    return CE('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',overflow:'visible'}},
-      // Title
-      CE('text',{x:PAD.l,y:14,fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px'},
-        attrLabel.toUpperCase()+' · '+(isPC?'%':PSD_CROPS[selCrops[0]]?.unit||'1000 MT')),
-      // Y grid + labels
+    // Build all series: for each chartAttr × crop × country
+    const series=[];
+    selCrops.forEach(crop=>{
+      selCountries.forEach(cc=>{
+        chartAttrs.forEach(attrId=>{
+          const isPC=attrId===195;
+          const vals=selYears.map(yr=>getVal(crop,yr,attrId,cc));
+          const anyData=vals.some(v=>v!=null);
+          if(!anyData)return;
+          const lbl=`${crop}/${PSD_CC_NAME[cc]?.split(' ')[0]||cc}/${PSD_ATTR_MAP[attrId]?.s||attrId}`;
+          const baseColor=CROP_COLORS[crop]||C.accent;
+          // vary color by attr if multiple attrs
+          const color=chartAttrs.length>1?ATTR_COLORS[attrId]||baseColor:baseColor;
+          series.push({label:lbl,vals,color,attrId,isPC});
+        });
+      });
+    });
+    if(!series.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'Select crops, countries and attributes above');
+    const allV=series.flatMap(s=>s.vals).filter(v=>v!=null&&!isNaN(v));
+    if(!allV.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data loaded yet — waiting for API…');
+    const dataMin=Math.min(...allV),dataMax=Math.max(...allV);
+    const pad=(dataMax-dataMin)*0.08||Math.abs(dataMax)*0.1||1;
+    const mn=dataMin-pad,mx=dataMax+pad,rng=mx-mn;
+    const xCount=selYears.length;
+    const xP=i=>PAD.l+(xCount>1?(i/(xCount-1))*plotW:plotW/2);
+    const yP=v=>PAD.t+plotH-Math.max(0,Math.min(1,(v-mn)/rng))*plotH;
+    const isPC=series.every(s=>s.isPC);
+    const yFmt=v=>isPC?v.toFixed(1)+'%':Math.abs(v)>=100000?(v/1000).toFixed(0)+'K':Math.abs(v)>=1000?(v/1000).toFixed(1)+'K':v.toFixed(1);
+    const nTicks=5;
+    const clipId='psdClip'+selCrops.join('');
+    return CE('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',overflow:'hidden'}},
+      // Clip path to keep lines inside plot area
+      CE('defs',null,
+        CE('clipPath',{id:clipId},CE('rect',{x:PAD.l,y:PAD.t,width:plotW,height:plotH}))
+      ),
+      // Y grid
       ...Array.from({length:nTicks+1},(_,i)=>{
         const v=mn+(rng/nTicks)*i,y=yP(v);
-        return CE('g',{key:'y'+i},
-          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:0.5,strokeDasharray:'2,3'}),
+        return CE('g',{key:'yg'+i},
+          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:0.5,strokeDasharray:'3,3'}),
           CE('text',{x:PAD.l-5,y:y+3,textAnchor:'end',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},yFmt(v))
         );
       }),
@@ -1795,76 +1776,194 @@ function PSDWorkbench({psd,psdKey}){
       CE('line',{x1:PAD.l,y1:PAD.t,x2:PAD.l,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
       CE('line',{x1:PAD.l,y1:H-PAD.b,x2:W-PAD.r,y2:H-PAD.b,stroke:C.border,strokeWidth:1}),
       // X labels
-      xLabels.map((lb,i)=>CE('text',{key:'x'+i,x:xP(i),y:H-PAD.b+13,textAnchor:'middle',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},lb)),
+      selYears.map((yr,i)=>{
+        const step=Math.max(1,Math.ceil(selYears.length/10));
+        if(i%step!==0&&i!==selYears.length-1)return null;
+        return CE('text',{key:'xl'+i,x:xP(i),y:H-PAD.b+13,textAnchor:'middle',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},''+yr);
+      }),
       // Series
-      ...chartSeries.map(({label,vals,color},si)=>{
+      ...series.map(({label,vals,color},si)=>{
         const pts=vals.map((v,i)=>v!=null&&!isNaN(v)?[xP(i),yP(v)]:null);
         const validPts=pts.filter(Boolean);
         if(!validPts.length)return null;
         if(chartType==='bar'){
-          const bw=Math.min(28,plotW/xLabels.length*0.7/Math.max(chartSeries.length,1));
-          const off=(si-(chartSeries.length-1)/2)*bw;
-          return CE('g',{key:'s'+si},
-            vals.map((v,i)=>{if(v==null||isNaN(v))return null;const bh=Math.max(1,(v-mn)/rng*plotH);const x=xP(i)+off-bw/2,y=yP(v);return CE('rect',{key:i,x,y,width:bw,height:bh,fill:color,opacity:0.8});})
+          const bw=Math.max(3,Math.min(24,plotW/xCount*0.7/Math.max(series.length,1)));
+          const off=(si-(series.length-1)/2)*bw;
+          return CE('g',{key:'s'+si,clipPath:`url(#${clipId})`},
+            vals.map((v,i)=>{if(v==null||isNaN(v))return null;
+              const bh=Math.max(1,(v-mn)/rng*plotH),x=xP(i)+off-bw/2,y=yP(v);
+              return CE('rect',{key:i,x,y,width:bw,height:bh,fill:color,opacity:0.8});
+            })
           );
         }
-        const pathD=pts.reduce((acc,p,i)=>acc+(p?(!acc.startsWith('M')||acc.endsWith('Z')?`M${p[0]},${p[1]}`:`L${p[0]},${p[1]}`):' Z '),'').replace(' Z M',' M');
+        // Line
+        const pathD=pts.reduce((acc,p,i)=>{
+          if(!p)return acc+(acc?'Z':'');
+          const cmd=(!acc||acc.endsWith('Z'))?`M${p[0].toFixed(1)},${p[1].toFixed(1)}`:`L${p[0].toFixed(1)},${p[1].toFixed(1)}`;
+          return acc.endsWith('Z')?acc+cmd:acc+cmd;
+        },'');
         return CE('g',{key:'s'+si},
-          CE('path',{d:pathD,fill:'none',stroke:color,strokeWidth:2,strokeLinejoin:'round'}),
-          validPts.map((p,pi)=>CE('circle',{key:pi,cx:p[0],cy:p[1],r:3,fill:color})),
-          validPts.map((p,pi)=>{
+          CE('path',{d:pathD,fill:'none',stroke:color,strokeWidth:1.8,strokeLinejoin:'round',clipPath:`url(#${clipId})`}),
+          xCount<=20&&validPts.map((p,pi)=>CE('circle',{key:pi,cx:p[0],cy:p[1],r:2.5,fill:color})),
+          // Only label every Nth point to avoid crowding
+          validPts.filter((_,pi)=>xCount<=8||pi===validPts.length-1).map((p,pi)=>{
             const v=vals.filter(v=>v!=null)[pi];
-            return CE('text',{key:'l'+pi,x:p[0],y:p[1]-7,textAnchor:'middle',fontSize:6.5,fill:color,fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},yFmt(v));
+            return CE('text',{key:'lv'+pi,x:p[0],y:p[1]-6,textAnchor:'middle',fontSize:6,fill:color,fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},yFmt(v));
           })
         );
       }),
-      // Legend
+      // Legend — bottom
       CE('g',{transform:`translate(${PAD.l},${H-14})`},
-        chartSeries.slice(0,8).map(({label,color},i)=>CE('g',{key:'leg'+i,transform:`translate(${i*95},0)`},
-          CE('rect',{x:0,y:-6,width:8,height:8,fill:color}),
-          CE('text',{x:11,y:1,fontSize:6.5,fill:C.text,fontFamily:'IBM Plex Mono,monospace'},label.slice(0,12))
+        series.slice(0,8).map(({label,color},i)=>CE('g',{key:'leg'+i,transform:`translate(${i*100},0)`},
+          CE('line',{x1:0,y1:-3,x2:12,y2:-3,stroke:color,strokeWidth:2}),
+          CE('text',{x:15,y:1,fontSize:6.5,fill:C.text,fontFamily:'IBM Plex Mono,monospace'},label.slice(0,14))
         ))
       )
     );
   };
 
-  return CE('div',{style:{padding:14,overflowY:'auto',flex:1,fontFamily:'IBM Plex Mono,monospace'}},
+  // ─── TABLE ────────────────────────────────────────
+  // PowerBI layout: columns = years, rows = (crop > country > attribute)
+  const renderTable=()=>{
+    const allLoaded=selCrops.every(c=>selYears.every(y=>tableData[c+'_'+y]!=null));
+    return CE('div',{style:{overflowX:'auto',overflowY:'auto',maxHeight:'60vh'}},
+      CE('table',{style:{borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace',whiteSpace:'nowrap'}},
+        // Header: years
+        CE('thead',null,
+          CE('tr',null,
+            CE('th',{style:{padding:'5px 10px',textAlign:'left',borderBottom:'2px solid '+C.accent,fontSize:6,color:C.muted,background:C.bg,position:'sticky',left:0,zIndex:3,minWidth:180}},'CROP · COUNTRY · ATTRIBUTE'),
+            selYears.map(yr=>CE('th',{key:yr,style:{padding:'5px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,color:C.accent,background:C.bg,minWidth:90,fontWeight:700,position:'sticky',top:0,zIndex:2}},'MY'+yr)),
+            selYears.length>1&&CE('th',{style:{padding:'5px 10px',textAlign:'right',borderBottom:'2px solid '+C.accent,color:C.muted,background:C.bg,minWidth:70,position:'sticky',top:0}},
+              selCountries.length===1?'YoY Δ':'')
+          )
+        ),
+        CE('tbody',null,
+          selCrops.flatMap(crop=>[
+            // ── Crop section header ──────────────────
+            CE('tr',{key:crop+'_hdr'},
+              CE('td',{colSpan:selYears.length+2,style:{padding:'6px 8px',color:C.gold,letterSpacing:'2px',fontWeight:700,background:C.s2,borderBottom:'1px solid '+C.border,fontSize:7}},
+                crop+' · '+PSD_CROPS[crop]?.unit)
+            ),
+            // ── Per-country groups ────────────────────
+            ...selCountries.flatMap(cc=>[
+              // Country subheader
+              selCountries.length>1&&CE('tr',{key:crop+'_'+cc+'_hdr'},
+                CE('td',{colSpan:selYears.length+2,style:{padding:'3px 8px 3px 20px',color:C.accent,fontSize:6,letterSpacing:'1px',background:C.s1,borderBottom:'1px solid '+C.border+'40'}},
+                  '▸ '+(PSD_CC_NAME[cc]||cc).toUpperCase())
+              ),
+              // Attribute rows
+              ...selAttrs.map(attrId=>{
+                const {n,s}=PSD_ATTR_MAP[attrId]||{n:'?',s:'?'};
+                const isPC=attrId===195;
+                const isKey=[195,176,28].includes(attrId);
+                const vals=selYears.map(yr=>getVal(crop,yr,attrId,cc));
+                const lastV=vals[vals.length-1];
+                const prevV=vals[vals.length-2];
+                const yoy=lastV!=null&&prevV!=null?lastV-prevV:null;
+                const rowBg=isKey?C.s1:'transparent';
+                return CE('tr',{key:crop+'_'+cc+'_'+attrId,
+                  style:{borderBottom:'1px solid '+C.border+'40',background:rowBg},
+                  onMouseEnter:e=>e.currentTarget.style.background=C.s2,
+                  onMouseLeave:e=>e.currentTarget.style.background=rowBg},
+                  CE('td',{style:{padding:'4px 8px 4px '+(selCountries.length>1?'28px':'8px'),color:isKey?C.hi:C.text,position:'sticky',left:0,background:'inherit',borderRight:'1px solid '+C.border,fontWeight:isKey?600:400,zIndex:1}},
+                    CE('span',{style:{fontSize:5.5,color:C.muted,marginRight:5}},s),n
+                  ),
+                  vals.map((v,yi)=>{
+                    const loading=loadingKeys.has(crop+'_'+selYears[yi]);
+                    return CE('td',{key:yi,style:{padding:'4px 10px',textAlign:'right',fontVariantNumeric:'tabular-nums',color:isPC?suColor(v):isKey?C.hi:C.text,fontWeight:isKey?600:400}},
+                      loading&&v==null?CE('span',{style:{color:C.border}},'…'):fmtN(v,isPC)
+                    );
+                  }),
+                  selYears.length>1&&selCountries.length===1&&CE('td',{style:{padding:'4px 10px',textAlign:'right',color:yoy==null?C.muted:yoy>0?C.green:C.red,fontVariantNumeric:'tabular-nums'}},
+                    yoy!=null?(yoy>0?'+':'')+fmtN(yoy,isPC):'—'
+                  )
+                );
+              })
+            ]).filter(Boolean)
+          ])
+        )
+      )
+    );
+  };
+
+  // ─── RENDER ───────────────────────────────────────
+  return CE('div',{style:{padding:12,overflowY:'auto',flex:1,fontFamily:'IBM Plex Mono,monospace',display:'flex',flexDirection:'column',gap:8}},
+
     // Header
-    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,paddingBottom:8,borderBottom:'1px solid '+C.border}},
+    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',paddingBottom:8,borderBottom:'1px solid '+C.border}},
       CE('div',null,
-        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:psd?.status==='live'?C.green:C.gold}},'USDA PSD WORKBENCH'+(isLoading?' · FETCHING…':'')),
-        CE('div',{style:{fontSize:6,color:C.muted,marginTop:2}},'Production, Supply & Distribution · api.fas.usda.gov · Numbers shown in native API units (see column headers) · 3-decimal precision')
+        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:psd?.status==='live'?C.green:psdKey?C.gold:C.muted}},'USDA PSD WORKBENCH'+(isLoading?' · FETCHING '+loadingKeys.size+'…':'')),
+        CE('div',{style:{fontSize:6,color:C.muted,marginTop:2}},'Production, Supply & Distribution · api.fas.usda.gov · Native API units · 0,000.000 format')
       ),
       CE('div',{style:{display:'flex',gap:6}},
         ['table','chart'].map(v=>CE('button',{key:v,onClick:()=>setViewMode(v),style:{fontSize:7,padding:'4px 14px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px',background:v===viewMode?C.accent+'20':'transparent',border:'1px solid '+(v===viewMode?C.accent:C.border),color:v===viewMode?C.accent:C.muted}},v.toUpperCase()))
       )
     ),
 
-    // No key state
-    !psdKey&&CE('div',{style:{padding:20,textAlign:'center',border:'1px solid '+C.border,background:C.s1,marginBottom:12}},
+    // No key
+    !psdKey&&CE('div',{style:{padding:16,textAlign:'center',border:'1px solid '+C.border,background:C.s1}},
       CE('div',{style:{fontSize:8,color:C.gold,marginBottom:6}},'USDA PSD KEY REQUIRED'),
-      CE('div',{style:{fontSize:7,color:C.muted,marginBottom:8}},'Add your free key in ⚙ Settings → USDA PSD'),
       CE('a',{href:'https://apps.fas.usda.gov/opendataweb/',target:'_blank',style:{fontSize:7,color:C.accent}},'→ Register free at apps.fas.usda.gov/opendataweb')
     ),
 
-    // Controls — 4 columns
-    CE('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:12,padding:'10px',background:C.s1,border:'1px solid '+C.border}},
-      CE(ChipSel,{label:'CROPS (multi-select)',items:Object.keys(PSD_CROPS).map(c=>[c,c]),selected:selCrops,onToggle:c=>toggle(selCrops,setSelCrops,c),color:C.gold}),
+    // ── CONTROLS ──────────────────────────────────────
+    CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,padding:'10px',background:C.s1,border:'1px solid '+C.border}},
+
+      // Crops
       CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'ATTRIBUTES (multi-select)'),
-        CE('div',{style:{display:'flex',flexDirection:'column',gap:3}},
-          PSD_ATTR_IDS.map(id=>CE('label',{key:id,style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}},
-            CE('input',{type:'checkbox',checked:selAttrs.includes(id),onChange:()=>toggle(selAttrs,setSelAttrs,id),style:{accentColor:C.green,cursor:'pointer'}}),
-            CE('span',{style:{fontSize:7,color:selAttrs.includes(id)?C.hi:C.muted}},PSD_ATTRS_DEF[id]?.n)
-          ))
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'CROPS'),
+        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:3}},
+          Object.keys(PSD_CROPS).map(c=>CE('button',{key:c,onClick:()=>toggle(selCrops,setSelCrops,c),
+            style:{fontSize:7,padding:'2px 7px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',
+              background:selCrops.includes(c)?C.gold+'22':'transparent',
+              border:'1px solid '+(selCrops.includes(c)?C.gold:C.border),
+              color:selCrops.includes(c)?C.gold:C.muted}},c))
         )
       ),
-      CE(ChipSel,{label:'MARKET YEARS (multi-select)',items:PSD_YEARS.map(y=>[y,''+y]),selected:selYears,onToggle:toggleY,color:C.accent}),
+
+      // Attributes
       CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'COUNTRIES (multi-select)'),
-        CE('div',{style:{maxHeight:160,overflowY:'auto',display:'flex',flexDirection:'column',gap:2}},
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'ATTRIBUTES'+(viewMode==='chart'?' (multi-select for chart)':'')),
+        CE('div',{style:{display:'flex',flexDirection:'column',gap:3}},
+          PSD_ATTR_IDS.map(id=>{
+            const checked=viewMode==='chart'?chartAttrs.includes(id):selAttrs.includes(id);
+            const onChg=viewMode==='chart'?()=>toggleChartAttr(id):()=>toggle(selAttrs,setSelAttrs,id);
+            return CE('label',{key:id,style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer'}},
+              CE('input',{type:'checkbox',checked,onChange:onChg,style:{accentColor:ATTR_COLORS[id]||C.accent,cursor:'pointer'}}),
+              CE('span',{style:{fontSize:7,color:checked?C.hi:C.muted}},PSD_ATTR_MAP[id]?.n)
+            );
+          })
+        )
+      ),
+
+      // Years: range picker + chips
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'MARKET YEARS ('+selYears.length+' selected)'),
+        CE('div',{style:{display:'flex',gap:4,marginBottom:6,alignItems:'center'}},
+          CE('input',{type:'number',value:yearFrom,min:1960,max:2025,onChange:e=>setYearFrom(parseInt(e.target.value)),
+            style:{width:52,fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'2px 4px',fontFamily:'IBM Plex Mono,monospace'}}),
+          CE('span',{style:{fontSize:7,color:C.muted}},'–'),
+          CE('input',{type:'number',value:yearTo,min:1960,max:2025,onChange:e=>setYearTo(parseInt(e.target.value)),
+            style:{width:52,fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'2px 4px',fontFamily:'IBM Plex Mono,monospace'}}),
+          CE('button',{onClick:applyYearRange,style:{fontSize:7,padding:'2px 8px',cursor:'pointer',background:C.accent+'20',border:'1px solid '+C.accent,color:C.accent,fontFamily:'IBM Plex Mono,monospace'}},'APPLY')
+        ),
+        CE('div',{style:{display:'flex',flexWrap:'wrap',gap:2,maxHeight:80,overflowY:'auto'}},
+          PSD_ALL_YEARS.filter(y=>y>=Math.max(2000,yearFrom-2)&&y<=yearTo+2).map(y=>
+            CE('button',{key:y,onClick:()=>toggleYear(y),
+              style:{fontSize:6,padding:'1px 5px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',
+                background:selYears.includes(y)?C.accent+'22':'transparent',
+                border:'1px solid '+(selYears.includes(y)?C.accent:C.border+'60'),
+                color:selYears.includes(y)?C.accent:C.muted}},y)
+          )
+        )
+      ),
+
+      // Countries
+      CE('div',null,
+        CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'COUNTRIES'),
+        CE('div',{style:{maxHeight:148,overflowY:'auto',display:'flex',flexDirection:'column',gap:2}},
           Object.entries(PSD_CC).map(([name,code])=>CE('label',{key:code,style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer',padding:'1px 0'}},
-            CE('input',{type:'checkbox',checked:selCountries.includes(code),onChange:()=>toggle(selCountries,setSelCountries,code),style:{accentColor:C.rose,cursor:'pointer'}}),
+            CE('input',{type:'checkbox',checked:selCountries.includes(code),onChange:()=>toggleCA(selCountries,setSelCountries,code),style:{accentColor:'#e17055',cursor:'pointer'}}),
             CE('span',{style:{fontSize:7,color:selCountries.includes(code)?C.hi:C.muted}},name)
           ))
         )
@@ -1872,119 +1971,273 @@ function PSDWorkbench({psd,psdKey}){
     ),
 
     // Chart extra controls
-    viewMode==='chart'&&CE('div',{style:{display:'flex',gap:12,marginBottom:10,padding:'8px 10px',background:C.s1,border:'1px solid '+C.border}},
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'ATTRIBUTE TO CHART'),
-        CE('select',{value:chartAttr,onChange:e=>setChartAttr(parseInt(e.target.value)),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'3px 8px',fontFamily:'IBM Plex Mono,monospace'}},
-          PSD_ATTR_IDS.map(id=>CE('option',{key:id,value:id},PSD_ATTRS_DEF[id]?.n))
-        )
+    viewMode==='chart'&&CE('div',{style:{display:'flex',gap:10,padding:'7px 10px',background:C.s1,border:'1px solid '+C.border,alignItems:'center'}},
+      CE('div',{style:{fontSize:6,color:C.muted}},'CHART TYPE'),
+      CE('div',{style:{display:'flex',gap:4}},
+        ['line','bar'].map(t=>CE('button',{key:t,onClick:()=>setChartType(t),style:{fontSize:7,padding:'2px 10px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',background:t===chartType?C.accent+'20':'transparent',border:'1px solid '+(t===chartType?C.accent:C.border),color:t===chartType?C.accent:C.muted}},t.toUpperCase()))
       ),
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'CHART TYPE'),
-        CE('div',{style:{display:'flex',gap:4}},
-          ['line','bar'].map(t=>CE('button',{key:t,onClick:()=>setChartType(t),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',background:t===chartType?C.accent+'20':'transparent',border:'1px solid '+(t===chartType?C.accent:C.border),color:t===chartType?C.accent:C.muted}},t.toUpperCase()))
-        )
-      ),
-      CE('div',null,
-        CE('div',{style:{fontSize:6,color:C.muted,marginBottom:4}},'SERIES DIMENSION'),
-        CE('div',{style:{display:'flex',gap:4}},
-          [['year','By Year'],['country','By Country']].map(([v,l])=>CE('button',{key:v,onClick:()=>setChartDim(v),style:{fontSize:7,padding:'3px 10px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',background:v===chartDim?C.gold+'20':'transparent',border:'1px solid '+(v===chartDim?C.gold:C.border),color:v===chartDim?C.gold:C.muted}},l))
-        )
-      )
+      CE('div',{style:{marginLeft:8,fontSize:6,color:C.muted}},'ATTRIBUTES SELECTED: '+chartAttrs.map(id=>PSD_ATTR_MAP[id]?.s).join(', ')),
+      CE('div',{style:{marginLeft:'auto',fontSize:6,color:C.muted}},'Each crop×country×attribute = one series · Max 8 series displayed')
     ),
 
-    // TABLE VIEW
-    viewMode==='table'&&CE('div',{style:{overflowX:'auto'}},
-      CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
-        CE('thead',null,
-          // Crop + attribute header
-          CE('tr',null,
-            CE('th',{style:{padding:'5px 8px',textAlign:'left',borderBottom:'2px solid '+C.accent,fontSize:6,letterSpacing:'1px',color:C.muted,background:C.s1,position:'sticky',left:0,minWidth:160,zIndex:2}},'CROP · ATTRIBUTE'),
-            selCrops.flatMap(crop=>
-              selCountries.flatMap(cc=>
-                selYears.map(yr=>
-                  CE('th',{key:crop+'_'+cc+'_'+yr,style:{padding:'5px 8px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6.5,color:C.accent,background:C.s1,minWidth:90,whiteSpace:'nowrap'}},
-                    (selCrops.length>1?crop.slice(0,3)+' ':'')+
-                    (selCountries.length>1?(PSD_CC_NAME[cc]?.split(' ')[0]||cc)+' ':'MY')+
-                    (selCountries.length>1?'\'':'')+String(yr).slice(2)
-                  )
-                )
-              )
-            ),
-            selYears.length>1&&selCountries.length===1&&CE('th',{style:{padding:'5px 8px',textAlign:'right',borderBottom:'2px solid '+C.accent,fontSize:6,color:C.muted,background:C.s1,minWidth:70}},'YoY Δ\n(latest)')
+    // Content: table or chart
+    viewMode==='table'?renderTable():
+    CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'12px 4px 8px'}},
+      renderChart()
+    ),
+
+    // Footer
+    CE('div',{style:{fontSize:6,color:C.muted,borderTop:'1px solid '+C.border,paddingTop:6,lineHeight:1.8}},
+      'Source: USDA FAS PSD Online · api.fas.usda.gov · Data available 1960–2025 · Units: Grains/Oilseeds/Sugar/Cocoa/Palm Oil = 1,000 MT · Cotton = 1,000 480-lb Bales · Coffee = 1,000 60-kg Bags · S/U = Ending Stocks ÷ Dom.Consumption × 100'
+    )
+  );
+}
+
+
+/* ═══════════════════════════════════════════
+   TRADING ECONOMICS MODULE — Markets + Macro
+   ═══════════════════════════════════════════ */
+function TEModule({teKey}){
+  const CE=React.createElement;
+  const [teView,setTeView]=useState('overview'); // overview | commodities | fx | bonds | indices | macro
+  const [teData,setTeData]=useState({});
+  const [loading,setLoading]=useState(false);
+  const [macroCountry,setMacroCountry]=useState('united states');
+  const [macroIndicator,setMacroIndicator]=useState('inflation rate');
+  const [macroHist,setMacroHist]=useState(null);
+  const [searchQ,setSearchQ]=useState('');
+
+  const KEY=teKey;
+  const proxy=url=>'https://corsproxy.io/?'+encodeURIComponent(url);
+
+  const fmtN=v=>{
+    if(v==null||isNaN(v))return '—';
+    const n=parseFloat(v);
+    const parts=Math.abs(n).toFixed(2).split('.');
+    parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,',');
+    return (n<0?'':'')+((n<0?'-':'')+parts.join('.'));
+  };
+  const pctColor=v=>v==null?C.muted:parseFloat(v)>0?C.green:parseFloat(v)<0?C.red:C.muted;
+  const chgFmt=v=>{if(v==null)return '—';const n=parseFloat(v);return (n>0?'+':'')+n.toFixed(2)+'%';};
+
+  // Fetch all market data on mount / key change
+  useEffect(()=>{
+    if(!KEY)return;
+    setLoading(true);
+    const endpoints={
+      commodities:`https://api.tradingeconomics.com/markets/commodities?c=${KEY}`,
+      fx:`https://api.tradingeconomics.com/markets/currency?c=${KEY}`,
+      bonds:`https://api.tradingeconomics.com/markets/bonds?c=${KEY}`,
+      indices:`https://api.tradingeconomics.com/markets/index?c=${KEY}`,
+    };
+    Promise.all(Object.entries(endpoints).map(async([k,url])=>{
+      try{
+        const r=await fetch(proxy(url));const d=await r.json();
+        return[k,Array.isArray(d)?d:[]];
+      }catch(e){return[k,[]];}
+    })).then(results=>{
+      const obj=Object.fromEntries(results);
+      setTeData(obj);
+      setLoading(false);
+    });
+  },[KEY]);
+
+  // Fetch macro history
+  const fetchMacro=async()=>{
+    if(!KEY||!macroCountry||!macroIndicator)return;
+    setMacroHist('loading');
+    try{
+      const url=`https://api.tradingeconomics.com/historical/country/${encodeURIComponent(macroCountry)}/indicator/${encodeURIComponent(macroIndicator)}?c=${KEY}`;
+      const r=await fetch(proxy(url));const d=await r.json();
+      setMacroHist(Array.isArray(d)?d.slice(-60):[]);
+    }catch(e){setMacroHist([]);}
+  };
+
+  useEffect(()=>{if(teView==='macro')fetchMacro();},[teView,macroCountry,macroIndicator]);
+
+  // Market table row
+  const MktRow=({item,showCountry})=>{
+    const chg=parseFloat(item.DailyChange||item.Change||0);
+    const chgPct=parseFloat(item.DailyPercentualChange||item.PercentualChange||0);
+    const last=parseFloat(item.Last||0);
+    const col=chg>=0?C.green:C.red;
+    return CE('tr',{
+      style:{borderBottom:'1px solid '+C.border+'40'},
+      onMouseEnter:e=>e.currentTarget.style.background=C.s2,
+      onMouseLeave:e=>e.currentTarget.style.background='transparent'},
+      showCountry&&CE('td',{style:{padding:'4px 8px',fontSize:6,color:C.muted}},item.Country||'—'),
+      CE('td',{style:{padding:'4px 8px',fontSize:8,color:C.hi,fontWeight:600,minWidth:120}},(item.Name||item.Ticker||'').slice(0,18)),
+      CE('td',{style:{padding:'4px 10px',fontSize:9,fontWeight:700,color:C.hi,textAlign:'right',fontVariantNumeric:'tabular-nums'}},fmtN(last)),
+      CE('td',{style:{padding:'4px 8px',fontSize:8,color:col,textAlign:'right',fontVariantNumeric:'tabular-nums'}},(chg>=0?'+':'')+fmtN(chg)),
+      CE('td',{style:{padding:'4px 8px',fontSize:8,color:col,textAlign:'right',fontVariantNumeric:'tabular-nums'}},(chgPct>=0?'+':'')+chgPct.toFixed(2)+'%'),
+      CE('td',{style:{padding:'4px 8px',fontSize:6,color:C.muted,textAlign:'right'}},(item.Date||'').slice(0,10))
+    );
+  };
+
+  const MktTable=({data,showCountry,label})=>{
+    const filtered=searchQ?(data||[]).filter(d=>(d.Name||d.Ticker||d.Country||'').toLowerCase().includes(searchQ.toLowerCase())):(data||[]);
+    return CE('div',null,
+      CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        CE('div',{style:{fontSize:7,letterSpacing:'2px',color:C.green}},'LIVE · '+label+' · '+filtered.length+' instruments · tradingeconomics.com'),
+        CE('input',{type:'text',placeholder:'Filter by name/ticker/country…',value:searchQ,onChange:e=>setSearchQ(e.target.value),
+          style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'3px 8px',fontFamily:'IBM Plex Mono,monospace',width:240}})
+      ),
+      CE('div',{style:{overflowY:'auto',maxHeight:'65vh'}},
+        CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+          CE('thead',null,CE('tr',{style:{position:'sticky',top:0,background:C.bg,zIndex:1}},
+            showCountry&&CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'COUNTRY'),
+            CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'NAME'),
+            CE('th',{style:{padding:'4px 10px',textAlign:'right',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'LAST'),
+            CE('th',{style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'CHG'),
+            CE('th',{style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'CHG %'),
+            CE('th',{style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,fontSize:6,color:C.muted}},'DATE')
+          )),
+          CE('tbody',null,filtered.slice(0,200).map((item,i)=>CE(MktRow,{key:i,item,showCountry})))
+        )
+      )
+    );
+  };
+
+  // Macro history chart
+  const MacroChart=({data,label})=>{
+    if(!data||!data.length)return CE('div',{style:{color:C.muted,fontSize:8,padding:16}},'No historical data returned');
+    const W=700,H=200,PAD={l:60,r:20,t:20,b:40};
+    const plotW=W-PAD.l-PAD.r,plotH=H-PAD.t-PAD.b;
+    const vals=data.map(d=>parseFloat(d.Value)).filter(v=>!isNaN(v));
+    const dates=data.map(d=>(d.DateTime||'').slice(0,7));
+    if(!vals.length)return null;
+    const mn=Math.min(...vals),mx=Math.max(...vals),rng=mx-mn||1;
+    const padV=rng*0.1;
+    const mn2=mn-padV,mx2=mx+padV,rng2=mx2-mn2;
+    const xP=i=>PAD.l+(i/(vals.length-1||1))*plotW;
+    const yP=v=>PAD.t+plotH-((v-mn2)/rng2)*plotH;
+    const pts=vals.map((v,i)=>`${xP(i).toFixed(1)},${yP(v).toFixed(1)}`).join(' ');
+    const last=vals[vals.length-1];
+    const col=last>vals[0]?C.green:C.red;
+    const step=Math.max(1,Math.ceil(dates.length/8));
+    return CE('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',overflow:'hidden'}},
+      CE('defs',null,CE('clipPath',{id:'macClip'},CE('rect',{x:PAD.l,y:PAD.t,width:plotW,height:plotH}))),
+      ...Array.from({length:4},(_,i)=>{
+        const v=mn2+(rng2/4)*i;const y=yP(v);
+        return CE('g',{key:i},
+          CE('line',{x1:PAD.l,y1:y,x2:W-PAD.r,y2:y,stroke:C.border,strokeWidth:0.5,strokeDasharray:'3,3'}),
+          CE('text',{x:PAD.l-4,y:y+3,textAnchor:'end',fontSize:7,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},v.toFixed(1))
+        );
+      }),
+      dates.filter((_,i)=>i%step===0||i===dates.length-1).map((d,i,arr)=>{
+        const origIdx=dates.indexOf(d);
+        return CE('text',{key:i,x:xP(origIdx),y:H-PAD.b+12,textAnchor:'middle',fontSize:6.5,fill:C.muted,fontFamily:'IBM Plex Mono,monospace'},d.slice(0,7));
+      }),
+      CE('polyline',{points:pts,fill:'none',stroke:col,strokeWidth:1.8,clipPath:'url(#macClip)'}),
+      CE('circle',{cx:xP(vals.length-1),cy:yP(last),r:4,fill:col}),
+      CE('text',{x:xP(vals.length-1)+6,y:yP(last)+3,fontSize:8,fill:col,fontFamily:'IBM Plex Mono,monospace',fontWeight:'bold'},last.toFixed(2))
+    );
+  };
+
+  const TE_COUNTRIES=['united states','china','euro area','germany','japan','brazil','india','united kingdom','australia','canada','russia','south korea','mexico','indonesia','turkey'];
+  const TE_INDICATORS=['inflation rate','interest rate','gdp growth rate','unemployment rate','balance of trade','current account','government debt to gdp','industrial production','retail sales','consumer confidence','manufacturing pmi','services pmi'];
+  const tabStyle=v=>({fontSize:7,padding:'4px 12px',cursor:'pointer',fontFamily:'IBM Plex Mono,monospace',letterSpacing:'1px',background:v===teView?C.accent+'20':'transparent',border:'1px solid '+(v===teView?C.accent:C.border),color:v===teView?C.accent:C.muted});
+
+  return CE('div',{style:{padding:12,overflowY:'auto',flex:1,fontFamily:'IBM Plex Mono,monospace'}},
+    // Header
+    CE('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,paddingBottom:8,borderBottom:'1px solid '+C.border}},
+      CE('div',null,
+        CE('div',{style:{fontSize:8,letterSpacing:'3px',color:KEY?C.green:C.muted}},'TRADING ECONOMICS'+(loading?' · LOADING…':KEY?' · LIVE':' · KEY REQUIRED')),
+        CE('div',{style:{fontSize:6,color:C.muted,marginTop:2}},'Real-time markets, macro indicators, economic calendar · 196 countries · tradingeconomics.com')
+      ),
+      !KEY&&CE('div',{style:{fontSize:7,color:C.gold}},'Add TE API key in ⚙ Settings → Trading Economics')
+    ),
+
+    // No key guard
+    !KEY&&CE('div',{style:{padding:20,textAlign:'center',border:'1px solid '+C.border,background:C.s1}},
+      CE('div',{style:{fontSize:8,color:C.gold,marginBottom:6}},'TRADING ECONOMICS API KEY REQUIRED'),
+      CE('div',{style:{fontSize:7,color:C.muted,marginBottom:8}},'Add your key in ⚙ Settings → Trading Economics'),
+      CE('a',{href:'https://tradingeconomics.com/api',target:'_blank',style:{fontSize:7,color:C.accent}},'→ tradingeconomics.com/api')
+    ),
+
+    KEY&&CE('div',null,
+      // Tabs
+      CE('div',{style:{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap'}},
+        [['overview','OVERVIEW'],['commodities','COMMODITIES'],['fx','FX / CURRENCY'],['bonds','BONDS'],['indices','INDICES'],['macro','MACRO HISTORY']].map(([v,l])=>
+          CE('button',{key:v,onClick:()=>{setTeView(v);setSearchQ('');},style:tabStyle(v)},l)
+        )
+      ),
+
+      // Overview
+      teView==='overview'&&CE('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
+        // Top commodities
+        CE('div',null,
+          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'TOP COMMODITIES'),
+          CE('div',{style:{overflowY:'auto',maxHeight:320}},
+            CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+              CE('tbody',null,(teData.commodities||[]).slice(0,15).map((item,i)=>CE(MktRow,{key:i,item,showCountry:false})))
+            )
           )
         ),
-        CE('tbody',null,
-          selCrops.flatMap(crop=>[
-            // Crop section header
-            CE('tr',{key:crop+'_hdr'},
-              CE('td',{colSpan:selCrops.length*selCountries.length*selYears.length+2,
-                style:{padding:'5px 8px',fontSize:7,color:C.gold,letterSpacing:'2px',fontWeight:600,borderBottom:'1px solid '+C.border,background:C.s2}},
-                crop+' · '+PSD_CROPS[crop]?.unit)
-            ),
-            ...selAttrs.map(attrId=>{
-              const {n,short,derived}=PSD_ATTRS_DEF[attrId]||{n:String(attrId),short:'?'};
-              const isPC=attrId===195;
-              const isKey=[195,176,28].includes(attrId);
-              const lastVals=selCountries.map(cc=>getVal(crop,selYears[selYears.length-1],attrId,cc));
-              const prevVals=selYears.length>1?selCountries.map(cc=>getVal(crop,selYears[selYears.length-2],attrId,cc)):null;
-              return CE('tr',{key:crop+'_'+attrId,
-                style:{borderBottom:'1px solid '+C.border+'50'},
-                onMouseEnter:e=>e.currentTarget.style.background=C.s2,
-                onMouseLeave:e=>e.currentTarget.style.background='transparent'},
-                CE('td',{style:{padding:'4px 8px',color:isKey?C.hi:C.text,position:'sticky',left:0,background:'inherit',borderRight:'1px solid '+C.border,fontWeight:isKey?600:400}},
-                  CE('span',{style:{fontSize:5.5,color:C.muted,marginRight:5}},short),n
-                ),
-                selCountries.flatMap(cc=>
-                  selYears.map(yr=>{
-                    const v=getVal(crop,yr,attrId,cc);
-                    const loading=loadingKeys.has(crop+'_'+yr);
-                    return CE('td',{key:cc+'_'+yr,style:{padding:'4px 8px',textAlign:'right',fontVariantNumeric:'tabular-nums',color:isPC?suColor(v):isKey?C.hi:C.text,fontWeight:isKey?600:400}},
-                      loading&&v==null?CE('span',{style:{color:C.muted,animation:'shimmer 1.5s infinite'}},'…'):fmtN(v,isPC)
-                    );
-                  })
-                ),
-                // YoY delta (only if 1 country selected and multiple years)
-                selYears.length>1&&selCountries.length===1&&(()=>{
-                  const last=lastVals[0],prev=prevVals?.[0];
-                  const delta=last!=null&&prev!=null?last-prev:null;
-                  return CE('td',{style:{padding:'4px 8px',textAlign:'right',color:delta==null?C.muted:delta>0?C.green:C.red,fontVariantNumeric:'tabular-nums'}},
-                    delta!=null?(delta>0?'+':'')+fmtN(delta,isPC):'—'
-                  );
-                })()
-              );
-            })
-          ])
-        )
-      )
-    ),
-
-    // CHART VIEW
-    viewMode==='chart'&&CE('div',null,
-      CE('div',{style:{background:C.s1,border:'1px solid '+C.border,padding:'12px 6px 8px',marginBottom:10}},
-        renderChart()
-      ),
-      // Data table below chart
-      CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:5}},'DATA: '+PSD_ATTRS_DEF[chartAttr]?.n),
-      CE('div',{style:{overflowX:'auto'}},
-        CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
-          CE('thead',null,CE('tr',null,
-            CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'SERIES'),
-            selYears.map(yr=>CE('th',{key:yr,style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,color:C.accent,fontSize:7}},'MY'+yr))
-          )),
-          CE('tbody',null,
-            chartSeries.map(({label,vals,color})=>CE('tr',{key:label,style:{borderBottom:'1px solid '+C.border+'40'}},
-              CE('td',{style:{padding:'4px 8px',color:color,fontWeight:600}},label),
-              vals.map((v,i)=>CE('td',{key:i,style:{padding:'4px 8px',textAlign:'right',color:chartAttr===195?suColor(v):C.hi,fontVariantNumeric:'tabular-nums'}},fmtN(v,chartAttr===195)))
-            ))
+        // FX overview
+        CE('div',null,
+          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},'KEY FX PAIRS'),
+          CE('div',{style:{overflowY:'auto',maxHeight:160}},
+            CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+              CE('tbody',null,(teData.fx||[]).filter(d=>['EURUSD','GBPUSD','USDJPY','USDCNY','AUDUSD','USDMXN','USDBRL'].includes(d.Ticker||d.Symbol?.split(':')[0])).slice(0,8).map((item,i)=>CE(MktRow,{key:i,item,showCountry:false})))
+            )
+          ),
+          CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',margin:'10px 0 6px'}},'GLOBAL INDICES'),
+          CE('div',{style:{overflowY:'auto',maxHeight:130}},
+            CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+              CE('tbody',null,(teData.indices||[]).filter(d=>['SPX','NDX','DAX','UKX','NKY','HSI','CSI','IBOV'].includes(d.Ticker||'')).slice(0,6).map((item,i)=>CE(MktRow,{key:i,item,showCountry:false})))
+            )
           )
         )
-      )
-    ),
+      ),
 
-    // Source footer
-    CE('div',{style:{marginTop:10,fontSize:6,color:C.muted,borderTop:'1px solid '+C.border,paddingTop:6,lineHeight:1.8}},
-      'Source: USDA FAS PSD Online · api.fas.usda.gov · Units: Corn/Soy/Wheat/Sugar/Cocoa/Palm Oil = 1,000 MT · Cotton = 1,000 480-lb Bales · Coffee = 1,000 60-kg Bags · Stocks/Use = Ending Stocks ÷ Dom.Consumption × 100 · Country codes verified from live API'
+      // Full tables
+      teView==='commodities'&&CE(MktTable,{data:teData.commodities,label:'COMMODITIES ('+((teData.commodities||[]).length)+')',showCountry:false}),
+      teView==='fx'&&CE(MktTable,{data:teData.fx,label:'CURRENCIES / FX',showCountry:true}),
+      teView==='bonds'&&CE(MktTable,{data:teData.bonds,label:'GOVERNMENT BONDS',showCountry:true}),
+      teView==='indices'&&CE(MktTable,{data:teData.indices,label:'STOCK INDICES',showCountry:true}),
+
+      // Macro history
+      teView==='macro'&&CE('div',null,
+        CE('div',{style:{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}},
+          CE('div',null,
+            CE('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'COUNTRY'),
+            CE('select',{value:macroCountry,onChange:e=>setMacroCountry(e.target.value),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace'}},
+              TE_COUNTRIES.map(c=>CE('option',{key:c,value:c},c.replace(/\b\w/g,l=>l.toUpperCase())))
+            )
+          ),
+          CE('div',null,
+            CE('div',{style:{fontSize:6,color:C.muted,marginBottom:3}},'INDICATOR'),
+            CE('select',{value:macroIndicator,onChange:e=>setMacroIndicator(e.target.value),style:{fontSize:7,background:C.s2,color:C.hi,border:'1px solid '+C.border,padding:'4px 8px',fontFamily:'IBM Plex Mono,monospace'}},
+              TE_INDICATORS.map(ind=>CE('option',{key:ind,value:ind},ind.replace(/\b\w/g,l=>l.toUpperCase())))
+            )
+          ),
+          CE('button',{onClick:fetchMacro,style:{fontSize:7,padding:'4px 14px',cursor:'pointer',background:C.accent+'20',border:'1px solid '+C.accent,color:C.accent,fontFamily:'IBM Plex Mono,monospace',alignSelf:'flex-end'}},'LOAD')
+        ),
+        macroHist==='loading'&&CE('div',{style:{color:C.muted,fontSize:8,padding:16}},'Loading historical data…'),
+        Array.isArray(macroHist)&&macroHist.length>0&&CE('div',null,
+          CE('div',{style:{padding:'10px 6px',background:C.s1,border:'1px solid '+C.border,marginBottom:8}},
+            CE('div',{style:{fontSize:6,color:C.muted,letterSpacing:'1px',marginBottom:6}},
+              macroCountry.toUpperCase()+' — '+macroIndicator.toUpperCase()+' · '+macroHist.length+' data points'),
+            CE(MacroChart,{data:macroHist,label:macroIndicator})
+          ),
+          CE('div',{style:{overflowY:'auto',maxHeight:200}},
+            CE('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:7,fontFamily:'IBM Plex Mono,monospace'}},
+              CE('thead',null,CE('tr',null,
+                CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'DATE'),
+                CE('th',{style:{padding:'4px 8px',textAlign:'right',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'VALUE'),
+                CE('th',{style:{padding:'4px 8px',textAlign:'left',borderBottom:'1px solid '+C.border,color:C.muted,fontSize:6}},'FREQ')
+              )),
+              CE('tbody',null,[...macroHist].reverse().map((d,i)=>CE('tr',{key:i,style:{borderBottom:'1px solid '+C.border+'40'}},
+                CE('td',{style:{padding:'3px 8px',color:C.muted}},(d.DateTime||'').slice(0,10)),
+                CE('td',{style:{padding:'3px 8px',textAlign:'right',color:C.hi,fontWeight:600}},parseFloat(d.Value).toFixed(2)),
+                CE('td',{style:{padding:'3px 8px',color:C.muted}},(d.Frequency||'').slice(0,10))
+              )))
+            )
+          )
+        ),
+        Array.isArray(macroHist)&&macroHist.length===0&&CE('div',{style:{color:C.muted,fontSize:8,padding:16}},'No data for this country/indicator combination')
+      )
     )
   );
 }
@@ -1995,7 +2248,7 @@ function AlphaOS(){
   const [showSettings,setShowSettings]=useState(false);
   const [showAlerts,setShowAlerts]=useState(false);
   const [detail,setDetail]=useState(null);
-  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||'',claude_key:localStorage.getItem('aos_claude_key')||''}));
+  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||'',claude_key:localStorage.getItem('aos_claude_key')||'',te:localStorage.getItem('aos_te')||''}));
   const [prices,setPrices]=useState(null);
   const [yields,setYields]=useState(null);
   const [cot,setCot]=useState([]);
@@ -2059,8 +2312,8 @@ function AlphaOS(){
     return ord.map(n=>{const p=P[n];return{n,v:p?fmt(p.price,n==='VIX'||n.includes('USD')||n==='DXY'?2:2):null,c:p?fmtPct(p.pct):null,up:p?(p.pct||0)>=0:true};}).filter(t=>t.v);
   },[prices]);
 
-  const INTEL=['BRIEFING','QUERY'];const MKT=['MACRO','FLOWS','ALTDATA','NLP','COMMOD','PSD'];
-  const LBL={BRIEFING:'BRIEFING',QUERY:'ALPHAQUERY',MACRO:'MACRO',FLOWS:'FLOWS',ALTDATA:'ALT DATA',NLP:'NLP INTEL',COMMOD:'COMMODITIES',PSD:'PSD WORKBENCH'};
+  const INTEL=['BRIEFING','QUERY'];const MKT=['MACRO','FLOWS','ALTDATA','NLP','COMMOD','PSD','TE'];
+  const LBL={BRIEFING:'BRIEFING',QUERY:'ALPHAQUERY',MACRO:'MACRO',FLOWS:'FLOWS',ALTDATA:'ALT DATA',NLP:'NLP INTEL',COMMOD:'COMMODITIES',PSD:'PSD WORKBENCH',TE:'MARKETS'};
 
   return React.createElement('div',{style:{display:'flex',flexDirection:'column',height:'100vh',background:C.bg,fontFamily:'IBM Plex Mono,monospace',overflow:'hidden'}},
     React.createElement('style',null,'@keyframes alphaTick{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}@keyframes alphaPulse{0%,100%{opacity:1}50%{opacity:0.3}}@keyframes alphaDot{0%,80%,100%{opacity:0.3;transform:scale(0.8)}40%{opacity:1;transform:scale(1)}}@keyframes shimmer{0%{opacity:0.3}50%{opacity:0.7}100%{opacity:0.3}}::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:#050810}::-webkit-scrollbar-thumb{background:#141830;border-radius:2px}input::placeholder{color:#1a2238}'),
@@ -2104,7 +2357,8 @@ function AlphaOS(){
       mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail,ams}),
       mod==='NLP'&&     React.createElement(NLPModule,{hawk,sc,geo,setDetail}),
       mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr}),
-      mod==='PSD'&&     React.createElement(PSDWorkbench,{psd,psdKey:apiKeys.psd})
+      mod==='PSD'&&     React.createElement(PSDWorkbench,{psd,psdKey:apiKeys.psd}),
+      mod==='TE'&&      React.createElement(TEModule,{teKey:apiKeys.te})
     ),
     /* STATUS BAR */
     React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
