@@ -1691,10 +1691,13 @@ function PSDWorkbench({psd,psdKey}){
     return d.rawByCC?.[cc]?.[attrId]??null;
   },[tableData]);
 
-  // Inline fetch — no closure/prop dependency
+  // Inline fetch — stable ref avoids infinite useEffect loop
+  const psdKeyRef=useRef(psdKey);
+  useEffect(()=>{psdKeyRef.current=psdKey;},[psdKey]);
   const doFetch=React.useCallback(async(crop,year)=>{
-    const meta=PSD_CROPS[crop];if(!meta||!psdKey)return null;
-    const base='https://api.fas.usda.gov/api/psd/commodity/'+meta.code+'/country/all/year/'+year+'?api_key='+psdKey;
+    const key=psdKeyRef.current;
+    const meta=PSD_CROPS[crop];if(!meta||!key)return null;
+    const base='https://api.fas.usda.gov/api/psd/commodity/'+meta.code+'/country/all/year/'+year+'?api_key='+key;
     for(const url of [base,'https://corsproxy.io/?'+encodeURIComponent(base)]){
       try{
         const r=await fetch(url,{headers:{Accept:'application/json'}});if(!r.ok)continue;
@@ -1708,20 +1711,21 @@ function PSDWorkbench({psd,psdKey}){
         return{year,rawByCC,world:{begStocks:Math.round(wBeg),production:Math.round(wProd),imports:Math.round(wImp),totalSupply:Math.round(wTot),exports:Math.round(wExp),domConsumption:Math.round(wDom),endingStocks:Math.round(wEnd),stocksToUse:wSU},us:mkCC('US'),topProducers:topProd};
       }catch(e){}
     }return null;
-  },[psdKey]);
+  },[]);
   useEffect(()=>{
     if(!psdKey)return;
     const needed=[];
     selCrops.forEach(crop=>selYears.forEach(year=>{const k=crop+'_'+year;if(!tableData[k]&&!loadingKeys.has(k))needed.push({crop,year,k});}));
     if(!needed.length)return;
-    setLoadingKeys(prev=>{const n=new Set(prev);needed.forEach(({k})=>n.add(k));return n;});
+    const keys=needed.map(n=>n.k);
+    setLoadingKeys(prev=>{const n=new Set(prev);keys.forEach(k=>n.add(k));return n;});
     needed.forEach(({crop,year,k})=>{
       doFetch(crop,year).then(d=>{
         setTableData(prev=>({...prev,[k]:d||null}));
         setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;});
       }).catch(()=>setLoadingKeys(prev=>{const n=new Set(prev);n.delete(k);return n;}));
     });
-  },[psdKey,selCrops,selYears,doFetch]);
+  },[psdKey,selCrops,selYears]);
 
   const toggle=(arr,setArr,v)=>setArr(p=>p.includes(v)?p.filter(x=>x!==v):[...p,v]);
   const toggleY=y=>setSelYears(p=>(p.includes(y)?p.filter(x=>x!==y):[...p,y]).sort((a,b)=>a-b));
