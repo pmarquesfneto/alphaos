@@ -218,19 +218,153 @@ async function fetchEIA(key){
   }catch(e){return null;}
 }
  
-/* 11. USDA — key-gated */
+/* 11. USDA NASS — key-gated */
 async function fetchUSDA(key){
   if(!key)return null;
   try{
     const r=await fetch('https://quickstats.nass.usda.gov/api/api_GET/?key='+key+'&commodity_desc=CORN&statisticcat_desc=CONDITION&class_desc=GOOD%20%2B%20EXCELLENT&year__GE=2024&state_name=US%20TOTAL&format=json');
     if(!r.ok)return null;const d=await r.json();
     const rows=(d.data||[]).slice(0,8).map(r=>({week:r.week_ending,value:parseFloat(r.Value),year:r.year}));
-    return rows.length?{status:'live',src:'USDA',data:rows}:null;
+    return rows.length?{status:'live',src:'USDA NASS',data:rows}:null;
   }catch(e){return null;}
 }
  
+/* 12. USDA PSD — Production, Supply & Distribution monthly S&D */
+const PSD_CROPS={
+  CORN:{code:'0440000',unit:'MMT'},SOYBEANS:{code:'2222000',unit:'MMT'},
+  WHEAT:{code:'0410000',unit:'MMT'},COTTON:{code:'0813100',unit:'1000 MT'},
+  COFFEE:{code:'0711100',unit:'1000 MT'},SUGAR:{code:'0611200',unit:'1000 MT'},
+  COCOA:{code:'0721200',unit:'1000 MT'},'PALM OIL':{code:'4243000',unit:'1000 MT'}
+};
+const PSD_ATTRS={28:'Production',176:'Ending Stocks',57:'Exports',21:'Imports',4:'Beg. Stocks'};
+ 
+async function fetchPSD(key,crop,countryCode){
+  if(!key)return null;
+  const cropMeta=PSD_CROPS[crop];if(!cropMeta)return null;
+  const cc=countryCode||'9000000'; // US default
+  const yr=new Date().getFullYear();
+  // Try current and prior market year
+  for(const year of [yr,yr-1]){
+    try{
+      const urls=[
+        `https://api.fas.usda.gov/api/psd/commodity/${cropMeta.code}/country/${cc}/year/${year}?api_key=${key}`,
+        `https://corsproxy.io/?${encodeURIComponent(`https://api.fas.usda.gov/api/psd/commodity/${cropMeta.code}/country/${cc}/year/${year}?api_key=${key}`)}`
+      ];
+      for(const url of urls){
+        try{
+          const r=await fetch(url,{headers:{Accept:'application/json'}});
+          if(!r.ok)continue;
+          const data=await r.json();
+          if(!data||!data.length)continue;
+          const get=(attrId)=>{const rec=data.find(d=>d.attributeId===attrId);return rec?parseFloat(rec.value):null;};
+          const prod=get(28),endStk=get(176),exp=get(57),begStk=get(4),imp=get(21);
+          const totalSupply=prod!=null&&begStk!=null?prod+begStk+(imp||0):null;
+          const su=totalSupply&&endStk?Math.round((endStk/totalSupply)*100):null;
+          return{status:'live',src:'USDA PSD',crop,country:cc,year,unit:cropMeta.unit,
+            production:prod,endingStocks:endStk,exports:exp,imports:imp,begStocks:begStk,
+            stocksToUse:su,data};
+        }catch(e){}
+      }
+    }catch(e){}
+  }
+  return null;
+}
+ 
+async function fetchPSDMulti(key){
+  if(!key)return null;
+  const crops=Object.keys(PSD_CROPS);
+  const results={};
+  for(const crop of crops){
+    // Fetch both US (9000000) and World (0000000) 
+    try{
+      const [us,world]=await Promise.all([fetchPSD(key,crop,'9000000'),fetchPSD(key,crop,'0000000')]);
+      if(us||world)results[crop]={us,world};
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,120));
+  }
+  return Object.keys(results).length?{status:'live',src:'USDA PSD',data:results}:null;
+}
+ 
+/* 13. USDA ESR — Weekly Export Sales (demand signal) */
+const ESR_CROPS={CORN:102,SOYBEANS:108,WHEAT:107,COTTON:6,SORGHUM:127};
+async function fetchESR(key){
+  if(!key)return null;
+  const yr=new Date().getFullYear();
+  const results={};
+  for(const [crop,code] of Object.entries(ESR_CROPS)){
+    try{
+      // Get weekly export sales for current market year, all countries
+      const urls=[
+        `https://api.fas.usda.gov/api/esr/exports/commodityCode/${code}/allCountriesRegions/marketYear/${yr}?api_key=${key}`,
+        `https://corsproxy.io/?${encodeURIComponent(`https://api.fas.usda.gov/api/esr/exports/commodityCode/${code}/allCountriesRegions/marketYear/${yr}?api_key=${key}`)}`
+      ];
+      let data=null;
+      for(const url of urls){
+        try{
+          const r=await fetch(url,{headers:{Accept:'application/json'}});
+          if(!r.ok)continue;
+          data=await r.json();
+          if(data&&data.length)break;
+        }catch(e){}
+      }
+      if(data&&data.length){
+        // Sort by weekEndingDate desc, take last 4 weeks
+        const sorted=data.sort((a,b)=>new Date(b.weekEndingDate)-new Date(a.weekEndingDate));
+        const latest=sorted[0];
+        const cumulative=data.reduce((s,d)=>s+(parseFloat(d.netSales)||0),0);
+        results[crop]={
+          weeklyNet:parseFloat(latest.netSales)||0,
+          accumulated:cumulative,
+          weekDate:latest.weekEndingDate,
+          outstanding:parseFloat(latest.currentMYOutstanding)||0,
+          recent:sorted.slice(0,8).map(d=>({date:d.weekEndingDate,net:parseFloat(d.netSales)||0})).reverse()
+        };
+      }
+      await new Promise(r=>setTimeout(r,150));
+    }catch(e){}
+  }
+  return Object.keys(results).length?{status:'live',src:'USDA ESR',data:results}:null;
+}
+ 
+/* 14. USDA AMS (MARS) — Market News: grain cash prices & livestock */
+async function fetchAMS(key){
+  if(!key)return null;
+  // AMS uses HTTP Basic auth: Authorization: Basic base64(key:)
+  const authHdr='Basic '+btoa(key+':');
+  // Key grain/livestock report slugs
+  const reports=[
+    {id:'2457',name:'National Grain Summary',type:'grain'},
+    {id:'3140',name:'National Weekly Cattle Prices',type:'livestock'},
+    {id:'2466',name:'National Daily Hog & Pork',type:'livestock'}
+  ];
+  const results={};
+  for(const rep of reports){
+    try{
+      const urls=[
+        `https://marsapi.ams.usda.gov/services/v1.2/reports/${rep.id}?allSections=true`,
+        `https://corsproxy.io/?${encodeURIComponent(`https://marsapi.ams.usda.gov/services/v1.2/reports/${rep.id}?allSections=true`)}`
+      ];
+      let data=null;
+      for(const url of urls){
+        try{
+          const r=await fetch(url,{headers:{Accept:'application/json',Authorization:authHdr}});
+          if(!r.ok)continue;
+          data=await r.json();
+          if(data)break;
+        }catch(e){}
+      }
+      if(data){
+        const items=Array.isArray(data)?data:(data.results||[]);
+        results[rep.name]={type:rep.type,id:rep.id,rows:items.slice(0,10)};
+      }
+      await new Promise(r=>setTimeout(r,200));
+    }catch(e){}
+  }
+  return Object.keys(results).length?{status:'live',src:'USDA AMS',data:results}:null;
+}
+ 
 function buildCtx(st){
-  const {prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso}=st;
+  const {prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso,psd,esr,ams}=st;
   const P=prices?.data||{},Y=yields||{};
   const ps=Object.entries(P).slice(0,10).map(([k,v])=>k+':'+fmt(v.price)+'('+fmtPct(v.pct)+')').join(' ');
   const cs=(cot||[]).filter(c=>c.live).map(c=>c.label+' '+c.pct+'th%ile '+fmtK(c.net)).join(' ');
@@ -239,14 +373,25 @@ function buildCtx(st){
   const gs=(geo||[]).map(g=>g.r+':conflict='+g.ci).join(' ');
   const yStr=Y['2Y']&&Y['10Y']?'US2Y:'+fmt(Y['2Y'],2)+'% 10Y:'+fmt(Y['10Y'],2)+'% spread:'+fmt((Y['10Y']-Y['2Y'])*100,0)+'bp':'';
   const ensoStr=enso?.status==='live'?'ONI:'+enso.oni+' '+enso.phase+' ('+enso.implication+')':'';
+  // PSD S&D summary
+  const psdStr=psd?.data?Object.entries(psd.data).slice(0,4).map(([crop,d])=>{
+    const w=d.world;
+    return w?crop+':prod='+fmt(w.production,0)+' endStk='+fmt(w.endingStocks,0)+' S/U='+w.stocksToUse+'%':'';
+  }).filter(Boolean).join(' '):'';
+  // ESR export pace
+  const esrStr=esr?.data?Object.entries(esr.data).slice(0,3).map(([crop,d])=>
+    crop+':wklyNet='+fmtK(d.weeklyNet*1000)+' accumulated='+fmtK(d.accumulated*1000)
+  ).join(' '):'';
   return 'You are AlphaQuery — institutional hedge fund AI. Date: '+new Date().toDateString()+'.\n\nLIVE PRICES ('+prices?.src+'): '+(ps||'OFFLINE')+
     '\nLIVE COT (CFTC 52w real percentiles): '+(cs||'loading')+
     '\nLIVE YIELDS (US Treasury): '+(yStr||'loading')+
     '\nLIVE CB HAWKISHNESS (Claude NLP): '+(hs||'loading')+
     (ensoStr?'\nLIVE ENSO (NOAA CPC): '+ensoStr:'')+
+    (psdStr?'\nUSDA PSD S&D (world, current yr): '+psdStr:'')+
+    (esrStr?'\nUSDA ESR EXPORT PACE (weekly): '+esrStr:'')+
     (fs?'\nFRED MACRO: '+fs:'\nFRED: key not configured')+
     (eia?'\nEIA CRUDE: '+fmt(eia.latest/1000,1)+'Mb ('+fmtK(eia.chg*1000)+' WoW)':'')+
-    (usda?'\nUSDA CORN G/E: '+usda.data[0]?.value?.toFixed(0)+'%':'')+
+    (usda?'\nUSDA NASS CORN G/E: '+usda.data[0]?.value?.toFixed(0)+'%':'')+
     '\nGDELT GEO RISK: '+(gs||'loading')+
     '\n\nOnly cite data present above. Be concise (4-6 sentences), data-driven, action-oriented. No disclaimers.';
 }
@@ -341,7 +486,7 @@ function MacroModule({prices,yields,fred,hawk,setDetail}){
   );
 }
  
-function FlowsModule({cot,loading,setDetail}){
+function FlowsModule({cot,loading,setDetail,esr}){
   const live=cot?.some(c=>c.live);
   const mx=Math.max(...(cot||[]).map(m=>Math.abs(m.net||0)))||1;
   return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
@@ -370,6 +515,23 @@ function FlowsModule({cot,loading,setDetail}){
         live&&React.createElement('div',{style:{marginTop:8,fontSize:7,color:C.muted,background:C.s2,border:'1px solid '+C.border,padding:'4px 8px'}},'52-week rolling percentile of non-commercial net position · Source: CFTC · Report lag: ~3-5 days')
       ]),
       React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+        esr?.data?card([
+          cardH('WEEKLY EXPORT SALES — ESR',esr.status==='live'?'LIVE · USDA FAS · '+Object.values(esr.data)[0]?.weekDate:'LOADING…',esr.status==='live'?C.green:C.muted),
+          React.createElement('div',{style:{marginTop:4}},
+            Object.entries(esr.data).map(([crop,d])=>
+              React.createElement('div',{key:crop,style:{display:'flex',alignItems:'center',gap:6,padding:'4px 0',borderBottom:'1px solid '+C.border}},
+                React.createElement('span',{style:{fontSize:8,color:C.text,width:80,flexShrink:0}}),crop,
+                React.createElement('div',{style:{flex:1,height:3,background:C.track}},
+                  React.createElement('div',{style:{height:'100%',width:Math.min(100,Math.abs(d.weeklyNet)/500*100)+'%',background:d.weeklyNet>0?C.green:C.red}})
+                ),
+                React.createElement('span',{style:{fontSize:8,color:d.weeklyNet>0?C.green:C.red,width:68,textAlign:'right',flexShrink:0}}),
+                (d.weeklyNet>0?'+':'')+fmtK(d.weeklyNet*1000)+' wk',
+                React.createElement('span',{style:{fontSize:7,color:C.muted,width:72,textAlign:'right',flexShrink:0}}),
+                'Accum: '+fmtK(d.accumulated*1000)
+              )
+            )
+          )
+        ]):card([cardH('WEEKLY EXPORT SALES — ESR'),React.createElement(NeedAPI,{name:'USDA FAS ESR KEY',url:'apps.fas.usda.gov/opendataweb',what:'Weekly US ag export sales by crop and destination'})]),
         card([cardH('ETF FLOWS'),React.createElement(NeedAPI,{name:'ETF FLOW FEED',url:'etfdb.com',what:'GLD, USO, DBA, PDBC 5-day rolling flows'})]),
         card([cardH('EM CAPITAL FLOWS'),React.createElement(NeedAPI,{name:'IIF CAPITAL FLOWS',url:'iif.com',what:'Weekly EM flows by country'})]),
         card([cardH('OPTIONS FLOW'),React.createElement(NeedAPI,{name:'OPTIONS FLOW',url:'unusualwhales.com',what:'Unusual options activity on commodity contracts'})])
@@ -378,7 +540,7 @@ function FlowsModule({cot,loading,setDetail}){
   );
 }
  
-function AltDataModule({noaa,gdelt,eia,usda,enso,setDetail}){
+function AltDataModule({noaa,gdelt,eia,usda,enso,setDetail,ams}){
   return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
     React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:8}},
       card([cardH('US CRUDE OIL STOCKS',eia?'LIVE · EIA · '+eia.period:'EIA KEY REQUIRED',eia?C.green:C.gold),
@@ -399,7 +561,22 @@ function AltDataModule({noaa,gdelt,eia,usda,enso,setDetail}){
       ]),
       card([cardH('AIS VESSEL TRACKING'),React.createElement(NeedAPI,{name:'SPIRE MARITIME API',url:'spire.com/maritime/',what:'Live vessel positions + cargo + routes'})]),
       card([cardH('CONSUMER SPEND DATA'),React.createElement(NeedAPI,{name:'2ND PARTY DATA',url:'affinity.solutions',what:'Card spend vs consensus by category'})]),
-      card([cardH('FREIGHT RATES'),React.createElement(NeedAPI,{name:'BALTIC EXCHANGE',url:'baltex.com',what:'Baltic Dry, Capesize, Panamax indices'})])
+      card([cardH('FREIGHT RATES'),React.createElement(NeedAPI,{name:'BALTIC EXCHANGE',url:'baltex.com',what:'Baltic Dry, Capesize, Panamax indices'})]),
+      card([cardH('AMS MARKET NEWS',ams?.status==='live'?'LIVE · USDA AMS · marsapi.ams.usda.gov':'AMS KEY REQUIRED',ams?.status==='live'?C.green:C.gold),
+        ams?.data?React.createElement('div',{style:{marginTop:4}},
+          Object.entries(ams.data).slice(0,3).map(([name,rep])=>
+            React.createElement('div',{key:name,style:{marginBottom:8,paddingBottom:8,borderBottom:'1px solid '+C.border}},
+              React.createElement('div',{style:{fontSize:6,letterSpacing:'1px',color:C.muted,marginBottom:4}}),name,
+              (rep.rows||[]).slice(0,3).map((r,i)=>
+                React.createElement('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'2px 0'}},
+                  React.createElement('span',{style:{fontSize:7,color:C.text}}),(r.commodity||r.report_date||'').toString().slice(0,30),
+                  React.createElement('span',{style:{fontSize:7,color:C.hi}}),(r.price||r.weighted_average||'').toString().slice(0,12)
+                )
+              )
+            )
+          )
+        ):React.createElement(NeedAPI,{name:'USDA AMS KEY',url:'mymarketnews.ams.usda.gov',what:'Grain cash prices, livestock, dairy market news'})
+      ])
     ),
     React.createElement('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
       card([cardH('NOAA WEATHER ALERTS',noaa?.status==='live'?'LIVE · '+(noaa.count||0)+' ACTIVE · api.weather.gov':'LOADING…',noaa?.status==='live'?C.green:C.muted),
@@ -475,7 +652,7 @@ function NLPModule({hawk,sc,geo,setDetail}){
   );
 }
  
-function CommodModule({cot,prices,usda,setDetail}){
+function CommodModule({cot,prices,usda,setDetail,psd,esr}){
   const [crop,setCrop]=useState('CORN');
   const P=prices?.data||{};
   const CROPS=['CORN','SOYBEANS','WHEAT','COTTON','COFFEE','SUGAR','COCOA','PALM OIL'];
@@ -483,6 +660,8 @@ function CommodModule({cot,prices,usda,setDetail}){
   const EXCH={'CORN':'CBOT','SOYBEANS':'CBOT','WHEAT':'CBOT','COTTON':'ICE','COFFEE':'ICE','SUGAR':'ICE','COCOA':'ICE','PALM OIL':'BMD'};
   const cotItem=(cot||[]).find(c=>c.label===crop);
   const priceItem=P[PMAP[crop]];
+  const psdCrop=psd?.data?.[crop];
+  const esrCrop=esr?.data?.[crop]||esr?.data?.['CORN']; // fallback
   const sevColor=s=>s>70?C.red:s>40?C.gold:C.green;
   return React.createElement('div',{style:{padding:14,overflowY:'auto',flex:1}},
     React.createElement('div',{style:{display:'flex',gap:0,borderBottom:'1px solid '+C.border,marginBottom:12}},
@@ -493,9 +672,37 @@ function CommodModule({cot,prices,usda,setDetail}){
         priceItem?[React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.hi,marginTop:4,key:'p'}},fmt(priceItem.price,2)),React.createElement('div',{style:{fontSize:8,color:up(priceItem.pct||0),marginTop:4,key:'c'}},fmtPct(priceItem.pct))]:
         [React.createElement('div',{style:{fontSize:18,fontWeight:700,color:C.muted,marginTop:4,key:'d'},},'—'),React.createElement('div',{style:{fontSize:7,color:C.gold,marginTop:4,key:'l'}},'CONNECT PRICE FEED')]
       ]),
-      card([cardH('S&D BALANCE',usda&&crop==='CORN'?'LIVE · USDA':'USDA KEY REQUIRED',usda&&crop==='CORN'?C.green:C.gold),
-        usda&&crop==='CORN'?[React.createElement('div',{style:{fontSize:12,fontWeight:600,color:usda.data[0]?.value>55?C.green:C.gold,marginTop:6,key:'v'}},'G/E: '+usda.data[0]?.value?.toFixed(0)+'%'),React.createElement('div',{style:{fontSize:7,color:C.muted,marginTop:2,key:'l'}},'Latest condition week')]:
-        React.createElement(NeedAPI,{name:'USDA KEY',url:'quickstats.nass.usda.gov/api/',what:'Crop S&D + condition data'})
+      card([cardH('S&D BALANCE',
+        psdCrop?.world?'LIVE · USDA PSD · MY'+psdCrop.world.year:psdCrop?.us?'LIVE · USDA PSD':
+        psd?.status==='loading'?'LOADING…':'PSD KEY REQUIRED',
+        psdCrop?.world||psdCrop?.us?C.green:C.gold),
+        (()=>{
+          const w=psdCrop?.world,u=psdCrop?.us;
+          if(w){
+            const su=w.stocksToUse;
+            const suCol=su!=null?(su<15?C.red:su<20?C.gold:C.green):C.muted;
+            return [
+              React.createElement('div',{key:'b',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
+                React.createElement('span',{style:{fontSize:7,color:C.muted}}),'WORLD PROD',
+                React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}}),w.production!=null?fmt(w.production,0)+' '+w.unit:'—'
+              ),
+              React.createElement('div',{key:'s',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
+                React.createElement('span',{style:{fontSize:7,color:C.muted}}),'END STOCKS',
+                React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}}),w.endingStocks!=null?fmt(w.endingStocks,0)+' '+w.unit:'—'
+              ),
+              React.createElement('div',{key:'u',style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid '+C.border}},
+                React.createElement('span',{style:{fontSize:7,color:C.muted}}),'EXPORTS',
+                React.createElement('span',{style:{fontSize:8,color:C.hi,fontWeight:600}}),w.exports!=null?fmt(w.exports,0)+' '+w.unit:'—'
+              ),
+              su!=null&&React.createElement('div',{key:'r',style:{display:'flex',justifyContent:'space-between',padding:'6px 0 0'}},
+                React.createElement('span',{style:{fontSize:7,color:C.muted}}),'STOCKS/USE',
+                React.createElement('span',{style:{fontSize:12,color:suCol,fontWeight:700}}),su+'%'
+              )
+            ];
+          }
+          if(u) return React.createElement('div',{style:{fontSize:8,color:C.text,marginTop:6}},'US only · world loading…');
+          return React.createElement(NeedAPI,{name:'USDA PSD KEY',url:'apps.fas.usda.gov/opendataweb',what:'Monthly S&D balance sheet for 8 crops'});
+        })()
       ]),
       card([cardH('COT SPEC %ILE',cotItem?.live?'LIVE · CFTC · '+cotItem.weeks+'w history':'LOADING…',cotItem?.live?C.green:C.muted),
         cotItem?.live?React.createElement('div',{onClick:()=>setDetail&&setDetail({type:'cot',data:cotItem}),style:{cursor:'pointer'},onMouseEnter:e=>e.currentTarget.style.opacity='0.8',onMouseLeave:e=>e.currentTarget.style.opacity='1'},
@@ -522,7 +729,24 @@ function CommodModule({cot,prices,usda,setDetail}){
     ),
     card([cardH('PRODUCTION CALENDAR','Q2 2026 · KEY USDA & EXCHANGE DATES'),
       ...[{d:'APR 9',e:'USDA WASDE Report',i:'HIGH'},{d:'APR 11',e:'US Crop Progress #1',i:'HIGH'},{d:'APR 28',e:'Brazil CONAB Report',i:'MEDIUM'},{d:'MAY 7',e:'USDA WASDE Report',i:'HIGH'},{d:'MAY 15',e:'China CASDE Report',i:'MEDIUM'},{d:'JUN 4',e:'USDA WASDE Report',i:'HIGH'}].map(e=>row(lbl(e.d,C.accent,{width:44,flexShrink:0}),lbl(e.e,C.hi),badge(e.i,sevC(e.i))))
-    ])
+    ]),
+    esr?.data&&React.createElement('div',{style:{marginTop:8}},
+      card([cardH('WEEKLY EXPORT SALES — ESR',esr.status==='live'?'LIVE · USDA FAS · api.fas.usda.gov · '+((esr.data[crop]||esr.data.CORN)?.weekDate||''):' ESR KEY REQUIRED',esr.status==='live'?C.green:C.gold),
+        React.createElement('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginTop:8}},
+          Object.entries(esr.data).slice(0,6).map(([c,d])=>{
+            const wkNet=d.weeklyNet;
+            return React.createElement('div',{key:c,style:{background:C.s2,border:'1px solid '+(c===crop?C.accent:C.border),padding:8,transition:'border-color 0.15s'}},
+              React.createElement('div',{style:{fontSize:6,color:C.muted,marginBottom:3}}),c,
+              React.createElement('div',{style:{fontSize:11,fontWeight:600,color:wkNet>0?C.green:C.red}},
+                (wkNet>0?'+':'')+fmtK(wkNet*1000)+' wk'
+              ),
+              React.createElement('div',{style:{fontSize:7,color:C.muted}}),
+              'Accum: '+fmtK(d.accumulated*1000)
+            );
+          })
+        )
+      ])
+    )
   );
 }
  
@@ -585,11 +809,25 @@ function QueryModule({ctx}){
 }
  
 function SettingsPanel({keys,onSave,onClose,apiStatus}){
-  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||''});
+  const [vals,setVals]=useState({fred:keys.fred||'',eia:keys.eia||'',usda:keys.usda||'',polygon:keys.polygon||'',psd:keys.psd||'',esr:keys.esr||'',ams:keys.ams||''});
   const [saved,setSaved]=useState(false);
-  const save=()=>{localStorage.setItem('aos_fred',vals.fred);localStorage.setItem('aos_eia',vals.eia);localStorage.setItem('aos_usda',vals.usda);localStorage.setItem('aos_polygon',vals.polygon);onSave(vals);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},1500);};
+  const save=()=>{
+    localStorage.setItem('aos_fred',vals.fred);localStorage.setItem('aos_eia',vals.eia);
+    localStorage.setItem('aos_usda',vals.usda);localStorage.setItem('aos_polygon',vals.polygon);
+    localStorage.setItem('aos_psd',vals.psd);localStorage.setItem('aos_esr',vals.esr);
+    localStorage.setItem('aos_ams',vals.ams);
+    onSave(vals);setSaved(true);setTimeout(()=>{setSaved(false);onClose();},1500);
+  };
   const free=[{id:'cftc',name:'CFTC COT',url:'publicreporting.cftc.gov',desc:'52-week spec positioning. Fully public.'},{id:'noaa',name:'NOAA Weather',url:'api.weather.gov',desc:'Live US weather alerts. Fully public.'},{id:'gdelt',name:'GDELT Geopolitical',url:'api.gdeltproject.org',desc:'Commodity headlines + regional risk. Fully public.'},{id:'treasury',name:'US Treasury Yields',url:'home.treasury.gov',desc:'Daily yield curve. Fully public.'},{id:'claude',name:'Claude (AlphaQuery)',url:'api.anthropic.com',desc:'AI brief + AlphaQuery + CB hawkishness. Platform key.'}];
-  const keyed=[{id:'fred',name:'FRED Macro',desc:'Fed Funds, CPI, unemployment, spreads.',link:'https://fred.stlouisfed.org/docs/api/fred/',k:'fred'},{id:'eia',name:'EIA Energy',desc:'US crude + gas storage weekly.',link:'https://www.eia.gov/opendata/register.php',k:'eia'},{id:'usda',name:'USDA NASS',desc:'Crop progress, conditions, export sales.',link:'https://quickstats.nass.usda.gov/api/',k:'usda'},{id:'polygon',name:'Polygon.io',desc:'Real-time prices for all futures ($29/mo).',link:'https://polygon.io/dashboard/signup',k:'polygon'}];
+  const keyed=[
+    {id:'fred',name:'FRED Macro',desc:'Fed Funds, CPI, unemployment, spreads.',link:'https://fred.stlouisfed.org/docs/api/fred/',k:'fred'},
+    {id:'eia',name:'EIA Energy',desc:'US crude + gas storage weekly.',link:'https://www.eia.gov/opendata/register.php',k:'eia'},
+    {id:'usda',name:'USDA NASS',desc:'Crop progress, conditions, export sales.',link:'https://quickstats.nass.usda.gov/api/',k:'usda'},
+    {id:'psd',name:'USDA PSD',desc:'Monthly S&D balance sheet: production, stocks, exports for 8 crops × US + World.',link:'https://apps.fas.usda.gov/opendataweb/',k:'psd'},
+    {id:'esr',name:'USDA ESR',desc:'Weekly export sales & commitments — 5 crops, leading demand indicator.',link:'https://apps.fas.usda.gov/opendataweb/',k:'esr'},
+    {id:'ams',name:'USDA AMS',desc:'Market News: grain cash prices, livestock auctions, dairy.',link:'https://mymarketnews.ams.usda.gov/',k:'ams'},
+    {id:'polygon',name:'Polygon.io',desc:'Real-time prices for all futures ($29/mo).',link:'https://polygon.io/dashboard/signup',k:'polygon'}
+  ];
   return React.createElement('div',{style:{position:'fixed',inset:0,background:'rgba(2,4,7,0.96)',zIndex:300,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:24,overflowY:'auto'}},
     React.createElement('div',{style:{background:C.s1,border:'1px solid '+C.border,width:'100%',maxWidth:700,maxHeight:'90vh',overflowY:'auto'}},
       React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 18px',borderBottom:'1px solid '+C.border,position:'sticky',top:0,background:C.s1}},
@@ -906,7 +1144,7 @@ function AlphaOS(){
   const [showSettings,setShowSettings]=useState(false);
   const [showAlerts,setShowAlerts]=useState(false);
   const [detail,setDetail]=useState(null);
-  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||''}));
+  const [apiKeys,setApiKeys]=useState(()=>({fred:localStorage.getItem('aos_fred')||'',eia:localStorage.getItem('aos_eia')||'',usda:localStorage.getItem('aos_usda')||'',polygon:localStorage.getItem('aos_polygon')||'',psd:localStorage.getItem('aos_psd')||'',esr:localStorage.getItem('aos_esr')||'',ams:localStorage.getItem('aos_ams')||''}));
   const [prices,setPrices]=useState(null);
   const [yields,setYields]=useState(null);
   const [cot,setCot]=useState([]);
@@ -920,7 +1158,10 @@ function AlphaOS(){
   const [eia,setEia]=useState(null);
   const [usda,setUsda]=useState(null);
   const [cotLoading,setCotLoading]=useState(true);
-  const [apiStatus,setApiStatus]=useState({cftc:'loading',noaa:'loading',gdelt:'loading',treasury:'loading',enso:'loading',claude:'live',fred:'needs_key',eia:'needs_key',usda:'needs_key',polygon:'needs_key'});
+  const [psd,setPsd]=useState(null);
+  const [esr,setEsr]=useState(null);
+  const [ams,setAms]=useState(null);
+  const [apiStatus,setApiStatus]=useState({cftc:'loading',noaa:'loading',gdelt:'loading',treasury:'loading',enso:'loading',claude:'live',fred:'needs_key',eia:'needs_key',usda:'needs_key',polygon:'needs_key',psd:'needs_key',esr:'needs_key',ams:'needs_key'});
  
   // Boot: all free APIs in parallel
   useEffect(()=>{
@@ -942,9 +1183,12 @@ function AlphaOS(){
     if(apiKeys.fred){setApiStatus(s=>({...s,fred:'loading'}));fetchFRED(apiKeys.fred).then(d=>{if(d){setFred(d);setApiStatus(s=>({...s,fred:'live'}));}else setApiStatus(s=>({...s,fred:'error'}));});}
     if(apiKeys.eia){setApiStatus(s=>({...s,eia:'loading'}));fetchEIA(apiKeys.eia).then(d=>{if(d){setEia(d);setApiStatus(s=>({...s,eia:'live'}));}else setApiStatus(s=>({...s,eia:'error'}));});}
     if(apiKeys.usda){setApiStatus(s=>({...s,usda:'loading'}));fetchUSDA(apiKeys.usda).then(d=>{if(d){setUsda(d);setApiStatus(s=>({...s,usda:'live'}));}else setApiStatus(s=>({...s,usda:'error'}));});}
+    if(apiKeys.psd){setApiStatus(s=>({...s,psd:'loading'}));fetchPSDMulti(apiKeys.psd).then(d=>{if(d){setPsd(d);setApiStatus(s=>({...s,psd:'live'}));}else setApiStatus(s=>({...s,psd:'error'}));});}
+    if(apiKeys.esr){setApiStatus(s=>({...s,esr:'loading'}));fetchESR(apiKeys.esr).then(d=>{if(d){setEsr(d);setApiStatus(s=>({...s,esr:'live'}));}else setApiStatus(s=>({...s,esr:'error'}));});}
+    if(apiKeys.ams){setApiStatus(s=>({...s,ams:'loading'}));fetchAMS(apiKeys.ams).then(d=>{if(d){setAms(d);setApiStatus(s=>({...s,ams:'live'}));}else setApiStatus(s=>({...s,ams:'error'}));});}
   },[apiKeys]);
  
-  const ctx=useMemo(()=>buildCtx({prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso}),[prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso]);
+  const ctx=useMemo(()=>buildCtx({prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso,psd,esr,ams}),[prices,yields,cot,noaa,gdelt,fred,eia,usda,hawk,geo,enso,psd,esr,ams]);
  
   // Dynamic alerts from live data only
   const alerts=useMemo(()=>{
@@ -1005,10 +1249,10 @@ function AlphaOS(){
       mod==='BRIEFING'&&React.createElement(BriefingModule,{ctx}),
       mod==='QUERY'&&   React.createElement(QueryModule,{ctx}),
       mod==='MACRO'&&   React.createElement(MacroModule,{prices,yields,fred,hawk,setDetail}),
-      mod==='FLOWS'&&   React.createElement(FlowsModule,{cot,loading:cotLoading,setDetail}),
-      mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail}),
+      mod==='FLOWS'&&   React.createElement(FlowsModule,{cot,loading:cotLoading,setDetail,esr}),
+      mod==='ALTDATA'&& React.createElement(AltDataModule,{noaa,gdelt,eia,usda,enso,setDetail,ams}),
       mod==='NLP'&&     React.createElement(NLPModule,{hawk,sc,geo,setDetail}),
-      mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail})
+      mod==='COMMOD'&&  React.createElement(CommodModule,{cot,prices,usda,setDetail,psd,esr})
     ),
     /* STATUS BAR */
     React.createElement('div',{style:{background:C.dim,borderTop:'1px solid '+C.border,padding:'3px 16px',display:'flex',gap:14,alignItems:'center',flexShrink:0,overflowX:'auto'}},
