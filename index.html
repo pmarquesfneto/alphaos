@@ -256,11 +256,11 @@ async function fetchPSDYear(key,crop,year){
       const rows=await r.json();
       if(!Array.isArray(rows)||!rows.length)continue;
       const sum=id=>rows.filter(d=>d.attributeId===id).reduce((s,d)=>s+parseFloat(d.value||0),0);
-      const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125),wEnd=sum(176);
+      const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125)||sum(142),wEnd=sum(176);
       const wSU=wDom>0?Math.round((wEnd/wDom)*1000)/10:null;
       const rawByCC={};
       rows.forEach(d=>{if(!rawByCC[d.countryCode])rawByCC[d.countryCode]={};rawByCC[d.countryCode][d.attributeId]=parseFloat(d.value||0);});
-      const mkCC=cc=>{const v=rawByCC[cc]||{};const dom=v[125]??null,end=v[176]??null;const su=dom!=null&&dom>0&&end!=null?Math.round((end/dom)*1000)/10:null;return{begStocks:v[20]??null,production:v[28]??null,imports:v[57]??null,totalSupply:v[86]??null,exports:v[88]??null,domConsumption:dom,endingStocks:end,stocksToUse:su};};
+      const mkCC=cc=>{const v=rawByCC[cc]||{};const dom=(v[125]!=null&&v[125]>0)?v[125]:(v[142]??null),end=v[176]??null;const su=dom!=null&&dom>0&&end!=null?Math.round((end/dom)*1000)/10:null;return{begStocks:v[20]??null,production:v[28]??null,imports:v[57]??null,totalSupply:v[86]??null,exports:v[88]??null,domConsumption:dom,endingStocks:end,stocksToUse:su};};
       const topProd=rows.filter(d=>d.attributeId===28&&parseFloat(d.value)>0)
         .sort((a,b)=>parseFloat(b.value)-parseFloat(a.value)).slice(0,8)
         .map(d=>({cc:d.countryCode,val:parseFloat(d.value)}));
@@ -1674,7 +1674,7 @@ function PSDWorkbench({psd,psdKey}){
         const r=await fetch(url,{headers:{Accept:'application/json'}});if(!r.ok)continue;
         const rows=await r.json();if(!Array.isArray(rows)||!rows.length)continue;
         const sum=id=>rows.filter(d=>d.attributeId===id).reduce((s,d)=>s+parseFloat(d.value||0),0);
-        const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125),wEnd=sum(176);
+        const wBeg=sum(20),wProd=sum(28),wImp=sum(57),wTot=sum(86),wExp=sum(88),wDom=sum(125)||sum(142),wEnd=sum(176);
         const wSU=wDom>0?Math.round((wEnd/wDom)*1000)/10:null;
         const rawByCC={};rows.forEach(d=>{if(!rawByCC[d.countryCode])rawByCC[d.countryCode]={};rawByCC[d.countryCode][d.attributeId]=parseFloat(d.value||0);});
         const mkCC=cc=>{const v=rawByCC[cc]||{};const dom=v[125]??null,end=v[176]??null;return{begStocks:v[20]??null,production:v[28]??null,imports:v[57]??null,totalSupply:v[86]??null,exports:v[88]??null,domConsumption:dom,endingStocks:end,stocksToUse:dom!=null&&dom>0&&end!=null?Math.round((end/dom)*1000)/10:null};};
