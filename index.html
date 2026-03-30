@@ -1729,8 +1729,10 @@ function PSDWorkbench({psd,psdKey}){
   const renderChart=()=>{
     const W=840,H=320,PAD={l:80,r:24,t:32,b:60};
     const plotW=W-PAD.l-PAD.r,plotH=H-PAD.t-PAD.b;
+    // 12-color qualitative palette — always distinct regardless of dimension
+    const QUAL_PALETTE=['#4a9ede','#f9ca24','#6ab04c','#e17055','#a29bfe','#fd79a8','#00cec9','#fdcb6e','#55efc4','#e84393','#74b9ff','#ff7675'];
     // Build all series: for each chartAttr × crop × country
-    const series=[];
+    const seriesRaw=[];
     selCrops.forEach(crop=>{
       selCountries.forEach(cc=>{
         chartAttrs.forEach(attrId=>{
@@ -1738,14 +1740,16 @@ function PSDWorkbench({psd,psdKey}){
           const vals=selYears.map(yr=>getVal(crop,yr,attrId,cc));
           const anyData=vals.some(v=>v!=null);
           if(!anyData)return;
-          const lbl=`${crop}/${PSD_CC_NAME[cc]?.split(' ')[0]||cc}/${PSD_ATTR_MAP[attrId]?.s||attrId}`;
-          const baseColor=CROP_COLORS[crop]||C.accent;
-          // vary color by attr if multiple attrs
-          const color=chartAttrs.length>1?ATTR_COLORS[attrId]||baseColor:baseColor;
-          series.push({label:lbl,vals,color,attrId,isPC});
+          const cropLabel=selCrops.length>1?crop:'';
+          const ccLabel=selCountries.length>1?(PSD_CC_NAME[cc]?.split(' ')[0]||cc):'';
+          const attrLabel=chartAttrs.length>1?(PSD_ATTR_MAP[attrId]?.s||''):'';
+          const parts=[cropLabel,ccLabel,attrLabel].filter(Boolean);
+          const lbl=parts.length?parts.join('/'):(crop+'/'+(PSD_CC_NAME[cc]?.split(' ')[0]||cc));
+          seriesRaw.push({label:lbl,vals,attrId,isPC});
         });
       });
     });
+    const series=seriesRaw.map((s,i)=>({...s,color:QUAL_PALETTE[i%QUAL_PALETTE.length]}));
     if(!series.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'Select crops, countries and attributes above');
     const allV=series.flatMap(s=>s.vals).filter(v=>v!=null&&!isNaN(v));
     if(!allV.length)return CE('div',{style:{height:H,display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,fontSize:8}},'No data loaded yet — waiting for API…');
